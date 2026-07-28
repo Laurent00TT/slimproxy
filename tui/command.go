@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/momo/slimproxy/tunnel"
+	"github.com/Laurent00TT/slimproxy/tunnel"
 )
 
 // Command is one slash command.

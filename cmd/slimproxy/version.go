@@ -6,7 +6,7 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/momo/slimproxy/proxy"
+	"github.com/Laurent00TT/slimproxy/proxy"
 )
 
 // cmdVersion prints what this binary is.

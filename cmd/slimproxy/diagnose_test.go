@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/momo/slimproxy/diag"
+	"github.com/Laurent00TT/slimproxy/diag"
 )
 
 // TestExitForReport pins doctor's machine-readable contract. CI gates on this

@@ -11,8 +11,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/momo/slimproxy/credentials"
-	"github.com/momo/slimproxy/fsperm"
+	"github.com/Laurent00TT/slimproxy/credentials"
+	"github.com/Laurent00TT/slimproxy/fsperm"
 )
 
 // cmdAuth dispatches the auth sub-verbs.

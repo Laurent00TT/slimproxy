@@ -8,10 +8,10 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/momo/slimproxy/credentials"
-	"github.com/momo/slimproxy/diag"
-	"github.com/momo/slimproxy/metrics"
-	"github.com/momo/slimproxy/tunnel"
+	"github.com/Laurent00TT/slimproxy/credentials"
+	"github.com/Laurent00TT/slimproxy/diag"
+	"github.com/Laurent00TT/slimproxy/metrics"
+	"github.com/Laurent00TT/slimproxy/tunnel"
 )
 
 // fixedNow anchors every time-dependent string, so a test that renders a

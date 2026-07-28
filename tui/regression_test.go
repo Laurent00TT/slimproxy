@@ -9,9 +9,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/momo/slimproxy/credentials"
-	"github.com/momo/slimproxy/metrics"
-	"github.com/momo/slimproxy/tunnel"
+	"github.com/Laurent00TT/slimproxy/credentials"
+	"github.com/Laurent00TT/slimproxy/metrics"
+	"github.com/Laurent00TT/slimproxy/tunnel"
 )
 
 // Everything here pins a defect that shipped and was found by review. Each test

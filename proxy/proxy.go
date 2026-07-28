@@ -19,12 +19,12 @@ import (
 	// Registers the built-in translator pairs. sdk/cliproxy pulls these in
 	// transitively today, but depending on that is fragile: an unregistered
 	// pair does not error, it forwards the untranslated body upstream.
-	"github.com/momo/slimproxy/fsperm"
-	"github.com/momo/slimproxy/journal"
-	"github.com/momo/slimproxy/metrics"
+	"github.com/Laurent00TT/slimproxy/fsperm"
+	"github.com/Laurent00TT/slimproxy/journal"
+	"github.com/Laurent00TT/slimproxy/metrics"
 
 	// Registers the built-in translator pairs.
-	_ "github.com/momo/slimproxy/translate"
+	_ "github.com/Laurent00TT/slimproxy/translate"
 )
 
 // EffectiveConfigName returns the file this instance materializes its resolved

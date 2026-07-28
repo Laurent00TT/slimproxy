@@ -1,4 +1,4 @@
-module github.com/momo/slimproxy
+module github.com/Laurent00TT/slimproxy
 
 go 1.26.0
 

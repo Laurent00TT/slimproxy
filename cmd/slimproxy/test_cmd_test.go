@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/momo/slimproxy/proxy"
+	"github.com/Laurent00TT/slimproxy/proxy"
 )
 
 // `slimproxy test` is the only command that establishes a request actually

@@ -6,10 +6,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/momo/slimproxy/credentials"
-	"github.com/momo/slimproxy/diag"
-	"github.com/momo/slimproxy/metrics"
-	"github.com/momo/slimproxy/tunnel"
+	"github.com/Laurent00TT/slimproxy/credentials"
+	"github.com/Laurent00TT/slimproxy/diag"
+	"github.com/Laurent00TT/slimproxy/metrics"
+	"github.com/Laurent00TT/slimproxy/tunnel"
 )
 
 // Deps is everything the dashboard needs from the rest of the program.

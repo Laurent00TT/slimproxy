@@ -10,7 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 
-	"github.com/momo/slimproxy/journal"
+	"github.com/Laurent00TT/slimproxy/journal"
 )
 
 // Inbound request fidelity probing.

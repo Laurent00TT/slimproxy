@@ -8,7 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/momo/slimproxy/journal"
+	"github.com/Laurent00TT/slimproxy/journal"
 )
 
 // AccessJournalMiddleware records inbound requests that were refused.

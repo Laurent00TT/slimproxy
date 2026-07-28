@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"text/tabwriter"
 
-	"github.com/momo/slimproxy/tunnel"
+	"github.com/Laurent00TT/slimproxy/tunnel"
 )
 
 // cmdTunnel dispatches the tunnel sub-verbs.

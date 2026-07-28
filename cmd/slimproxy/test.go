@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/momo/slimproxy/proxy"
+	"github.com/Laurent00TT/slimproxy/proxy"
 )
 
 // cmdTest sends one real request through the running proxy.

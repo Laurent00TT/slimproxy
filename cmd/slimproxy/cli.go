@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/momo/slimproxy/proxy"
+	"github.com/Laurent00TT/slimproxy/proxy"
 )
 
 // cliContext carries what every command needs, so a command body deals with its

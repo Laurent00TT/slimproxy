@@ -11,13 +11,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/momo/slimproxy/credentials"
-	"github.com/momo/slimproxy/diag"
-	"github.com/momo/slimproxy/journal"
-	"github.com/momo/slimproxy/proxy"
-	"github.com/momo/slimproxy/translate"
-	"github.com/momo/slimproxy/tui"
-	"github.com/momo/slimproxy/tunnel"
+	"github.com/Laurent00TT/slimproxy/credentials"
+	"github.com/Laurent00TT/slimproxy/diag"
+	"github.com/Laurent00TT/slimproxy/journal"
+	"github.com/Laurent00TT/slimproxy/proxy"
+	"github.com/Laurent00TT/slimproxy/translate"
+	"github.com/Laurent00TT/slimproxy/tui"
+	"github.com/Laurent00TT/slimproxy/tunnel"
 )
 
 // proxyStopGrace is how long the dashboard waits for the proxy to finish after

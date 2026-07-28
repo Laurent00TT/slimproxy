@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/momo/slimproxy/fsperm"
-	"github.com/momo/slimproxy/metrics"
+	"github.com/Laurent00TT/slimproxy/fsperm"
+	"github.com/Laurent00TT/slimproxy/metrics"
 )
 
 // DefaultRetentionDays is how long daily event files are kept.

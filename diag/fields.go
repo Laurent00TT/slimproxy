@@ -7,7 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/momo/slimproxy/proxy"
+	"github.com/Laurent00TT/slimproxy/proxy"
 )
 
 // UnknownFields reports top-level config keys this binary does not recognise.

@@ -6,7 +6,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/momo/slimproxy/journal"
+	"github.com/Laurent00TT/slimproxy/journal"
 )
 
 // cmdLog queries the event journal.

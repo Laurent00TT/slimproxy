@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/momo/slimproxy/credentials"
-	"github.com/momo/slimproxy/diag"
-	"github.com/momo/slimproxy/tunnel"
+	"github.com/Laurent00TT/slimproxy/credentials"
+	"github.com/Laurent00TT/slimproxy/diag"
+	"github.com/Laurent00TT/slimproxy/tunnel"
 )
 
 // actionSpec is what pressing Enter on a command asks for.

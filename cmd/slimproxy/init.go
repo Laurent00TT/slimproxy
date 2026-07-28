@@ -10,8 +10,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/momo/slimproxy/credentials"
-	"github.com/momo/slimproxy/fsperm"
+	"github.com/Laurent00TT/slimproxy/credentials"
+	"github.com/Laurent00TT/slimproxy/fsperm"
 )
 
 // initConfig writes a ready-to-run config so the first run needs no

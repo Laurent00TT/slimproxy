@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/momo/slimproxy/tunnel"
+	"github.com/Laurent00TT/slimproxy/tunnel"
 )
 
 // fakeIPNet is RFC 2544 benchmark space, 198.18.0.0/15.

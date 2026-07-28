@@ -14,9 +14,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/momo/slimproxy/diag"
-	"github.com/momo/slimproxy/proxy"
-	"github.com/momo/slimproxy/tunnel"
+	"github.com/Laurent00TT/slimproxy/diag"
+	"github.com/Laurent00TT/slimproxy/proxy"
+	"github.com/Laurent00TT/slimproxy/tunnel"
 )
 
 // loadConfigForDiagnosis parses the config without rejecting unknown fields.

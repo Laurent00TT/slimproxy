@@ -1,6 +1,6 @@
 package diag
 
-import "github.com/momo/slimproxy/tunnel"
+import "github.com/Laurent00TT/slimproxy/tunnel"
 
 // DetectTunnel reports the cloudflared configuration.
 //

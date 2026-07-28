@@ -9,8 +9,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/momo/slimproxy/credentials"
-	"github.com/momo/slimproxy/tunnel"
+	"github.com/Laurent00TT/slimproxy/credentials"
+	"github.com/Laurent00TT/slimproxy/tunnel"
 )
 
 func key(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }

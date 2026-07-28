@@ -19,9 +19,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/momo/slimproxy/proxy"
-	"github.com/momo/slimproxy/translate"
-	"github.com/momo/slimproxy/tui"
+	"github.com/Laurent00TT/slimproxy/proxy"
+	"github.com/Laurent00TT/slimproxy/translate"
+	"github.com/Laurent00TT/slimproxy/tui"
 )
 
 func main() {

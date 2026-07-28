@@ -19,7 +19,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/momo/slimproxy/fsperm"
+	"github.com/Laurent00TT/slimproxy/fsperm"
 )
 
 // pidFileName is where a detached tunnel records itself, inside the state dir.

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/momo/slimproxy/fsperm"
+	"github.com/Laurent00TT/slimproxy/fsperm"
 
 	"github.com/gin-gonic/gin"
 	log "github.com/sirupsen/logrus"

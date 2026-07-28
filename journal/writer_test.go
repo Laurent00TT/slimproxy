@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/momo/slimproxy/metrics"
+	"github.com/Laurent00TT/slimproxy/metrics"
 )
 
 func readDay(t *testing.T, dir, day string) []Event {

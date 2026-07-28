@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/momo/slimproxy/credentials"
-	"github.com/momo/slimproxy/metrics"
-	"github.com/momo/slimproxy/tunnel"
+	"github.com/Laurent00TT/slimproxy/credentials"
+	"github.com/Laurent00TT/slimproxy/metrics"
+	"github.com/Laurent00TT/slimproxy/tunnel"
 )
 
 // TestRenderFailureStates prints the frames that only appear when something is
