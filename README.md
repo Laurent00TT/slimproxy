@@ -1,146 +1,11 @@
 # slimproxy
 
-A small reverse proxy built on [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)'s
-public SDK, plus a typed facade over its protocol translator registry.
+**Use one LLM subscription from every tool that speaks a different API.**
 
-> **Not affiliated** with Anthropic, OpenAI, Google, or the CLIProxyAPI project.
->
-> **Know what you are doing before you deploy this.** The typical setup routes
-> API-shaped traffic through a consumer subscription's OAuth credential — most
-> providers' terms of service restrict their subscriptions to their own
-> official clients, and exposing yours through any proxy risks account
-> suspension. This project does not endorse that use; it assumes you have read
-> your provider's terms and made your own call. Never share a deployment with
-> anyone you would not hand the underlying account to.
->
-> **Platform status**: developed and operated on Windows. Linux and macOS
-> compile and pass the test suite, but have not been run in production by the
-> author.
-
-Two packages, one binary:
-
-| | |
-|---|---|
-| `translate/` | Typed, fail-loud facade over `sdk/translator`. Usable on its own — 14 indirect dependencies. **Not on the serving path**: CLIProxyAPI's executors call `sdktranslator` directly, so the guard for that path lives in `proxy/untranslated.go`. |
-| `proxy/` | Minimal reverse proxy over `sdk/cliproxy.Builder`. Everything not needed is pinned off. |
-| `metrics/` | Completed-request telemetry, read in-process by the dashboard. |
-| `diag/` | Deployment diagnostics. Never reports an unanswered question as healthy. |
-| `tunnel/` | Operates the cloudflared child process: three-state status, start, stop. |
-| `credentials/` | Inspects and manages the upstream OAuth credential pool. |
-| `tui/` | Full-screen terminal dashboard (bubbletea + lipgloss). Presentation only. |
-| `fsperm/` | Restricts sensitive paths to the current user. On Windows the permission bits are not access control. |
-| `cmd/slimproxy` | CLI: `serve`, `check`, `init`, `status`, `doctor`, `auth`, `tunnel`, `routes`, `log`, `test`, `version`, `help`. |
-
-## Documentation
-
-| | |
-|---|---|
-| [docs/GUIDE.md](docs/GUIDE.md) | 使用指南。从零开始，每个命令什么时候用、输出怎么读、出问题怎么查。 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构剖析。每个设计决定在什么约束下做出，以及改哪里会出事。 |
-| [deploy/TUNNEL.md](deploy/TUNNEL.md) | Cloudflare Tunnel 的一次性配置。 |
-
-Most documentation and all CLI output is in Chinese; this README and TUNNEL.md
-are in English. That split is deliberate — the CLI's audience is the author's
-circle first — but contributions translating either direction are welcome.
-
-The rest of this file is the reference: what is pinned off and why, the
-translator facade's contract, and the configuration notes worth knowing.
-
-## What "slim" does and does not mean
-
-**Does**: the configuration and runtime surface. One config file with 16 keys instead of
-~200. No management API, no control panel, no plugin host, no pprof, no Redis usage queue.
-Unknown config keys are errors, not silently ignored. Inbound auth is fail-*closed*.
-
-**Does not**: the dependency tree or the binary size. The provider executors — which carry
-the upstream client emulation — live in CLIProxyAPI's `internal/` tree. Go's
-internal-package rule makes `sdk/cliproxy.Builder` the only way for another module to reach
-them, and building a `Service` links gin, pion/webrtc, redis and lumberjack whether or not
-those subsystems run. Genuinely shrinking that requires forking CLIProxyAPI, which trades
-the dependency tree for permanent merge burden on the emulation layer.
-
-**The emulation layer is used exactly as CLIProxyAPI ships it.** Nothing in this module
-modifies, extends, or hardens it.
-
-## Quick start
-
-```bash
-go build -o slimproxy ./cmd/slimproxy
-./slimproxy init
-./slimproxy auth add claude
-./slimproxy
-```
-
-`init` writes `slimproxy.yaml` with a generated API key, creates the auth
-directory, and prints what to do next. `auth add` runs the provider's OAuth flow
-and stores the credential where the proxy will load it from.
-
-Running with no arguments serves — and, on a terminal, opens the dashboard.
-
-```bash
-./slimproxy check      # validate config, print what would run, exit
-./slimproxy status     # report observable state, always exit 0 (for scripts)
-./slimproxy doctor     # diagnose deployment problems, exit non-zero if any
-./slimproxy auth list  # the credential pool and each entry's state
-./slimproxy tunnel status
-./slimproxy routes     # which client<->provider dialect routes this build serves
-./slimproxy test       # send one real request end to end (spends upstream quota)
-./slimproxy version    # version and build provenance
-```
-
-The original flag spellings (`-check`, `-init`, `-routes`) still work and reach
-the same command functions.
-
-### Verified behaviour
-
-| Request | Result |
-|---|---|
-| `GET /healthz` | 200 |
-| `GET /v1/models` no key | 401 |
-| `GET /v1/models` wrong key | 401 |
-| `GET /v1/models` correct key | 200 |
-| `GET /v0/management/config` | 404 |
-| `GET /management.html` | 404 |
-| config with empty `api-keys` | refuses to start |
-| config with a typo'd key | refuses to start, names the key |
-
-### Protocol support matrix
-
-What has actually been exercised end to end against a real Claude backend
-(2026-07), versus what merely exists in the route table. "Works" means a real
-request went through and the response shape was checked — nothing more.
-
-| Client dialect | Endpoint | Non-stream | Stream | Tools | Notes |
-|---|---|---|---|---|---|
-| Anthropic | `/v1/messages`, `/v1/messages/count_tokens` | ✅ | ✅ | ✅ | Primary path (Claude Code). |
-| OpenAI chat | `/v1/chat/completions` | ✅ | ✅ | ✅ incl. tool-result round-trip | Response `id` keeps the upstream `msg_…` form instead of `chatcmpl-…`. |
-| OpenAI Responses | `/v1/responses` | ✅ structured `input` | ✅ | untested | **String-form `input` fails** (upstream translator bug): translated to empty `messages`, error returned in Anthropic shape. Codex CLI uses the structured form and works. |
-| Gemini | `:generateContent`, `:streamGenerateContent` | ✅ | ✅ | ✅ | **`:countTokens` fails** (upstream translator bug): builds a count request with `max_tokens`, which Anthropic rejects. |
-| interactions | — | untested | untested | untested | No client on hand speaks it. |
-
-Both ❌ items are translation bugs in upstream CLIProxyAPI, observable through
-any deployment of it, not just this one.
-
-Known behaviours to plan around:
-
-- **`/v1/models` is a static registry, not a capability probe.** It advertises
-  models the upstream registry knows about; your credential may still refuse
-  some of them (a subscription credential 404s on models outside its plan).
-  The registry also gates serving: a model absent from it is refused even if
-  your credential could serve it.
-- **The upstream injects the Claude Code system prompt** (~1.4k tokens) into
-  every request as part of client emulation. Non-Claude-Code clients will see
-  the assistant identify as "Claude Code" and count those tokens in usage.
-- **Refusal marking varies by dialect.** Anthropic clients receive the native
-  `stop_reason:"refusal"` untouched; OpenAI chat clients get
-  `finish_reason:"content_filter"`; every other dialect currently receives an
-  empty completion plus a WARN in the log (see `proxy/refusal.go` for why).
-
-## Dashboard
-
-`slimproxy` with no arguments serves *and* draws a full-screen panel, in one
-process. There is no HTTP surface behind it: the panel reads the collector in
-memory and calls the same functions the subcommands do.
+Point an OpenAI-compatible editor plugin, a Gemini-format script, and Claude Code
+at the same local port, and they all reach the same upstream account. slimproxy
+runs on `127.0.0.1`, translates between the dialects, and shows you what is
+actually happening while it does.
 
 ```
 ┌─ slimproxy 0.1.0 ──────────────────────────────────────────┐
@@ -159,6 +24,181 @@ memory and calls the same functions the subcommands do.
  › /tunnel d
 ```
 
+The protocol emulation is [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)'s,
+used exactly as it ships. What slimproxy adds is everything around it: a
+16-key config instead of ~200, fail-closed auth, a terminal dashboard, tunnel
+lifecycle management, and diagnostics that refuse to call an unanswered
+question healthy.
+
+## Before you deploy this
+
+> **Know what you are doing.** The typical setup routes API-shaped traffic
+> through a consumer subscription's OAuth credential — most providers' terms of
+> service restrict their subscriptions to their own official clients, and
+> exposing yours through any proxy risks account suspension. This project does
+> not endorse that use; it assumes you have read your provider's terms and made
+> your own call. Never share a deployment with anyone you would not hand the
+> underlying account to.
+>
+> **Not affiliated** with Anthropic, OpenAI, Google, Cloudflare, or the
+> CLIProxyAPI project.
+>
+> **Platform status**: developed and operated on Windows. Linux and macOS
+> compile and pass the test suite, but have not been run in production by the
+> author.
+
+## Quick start
+
+Requires Go (version in [go.mod](go.mod)). No other setup — dependencies come
+from the public module proxy.
+
+```bash
+go build -o slimproxy ./cmd/slimproxy
+./slimproxy init
+./slimproxy auth add claude
+./slimproxy
+```
+
+`init` writes `slimproxy.yaml` with a generated API key, creates the auth
+directory, and prints what to do next. `auth add` runs the provider's OAuth flow
+and stores the credential where the proxy will load it from. Running with no
+arguments serves — and, on a terminal, opens the dashboard above.
+
+Point your client at `http://127.0.0.1:8317/v1` with the generated key as the
+bearer token, and you are done.
+
+## Commands
+
+```bash
+./slimproxy check      # validate config, print what would run, exit
+./slimproxy status     # report observable state, always exit 0 (for scripts)
+./slimproxy doctor     # diagnose deployment problems, exit non-zero if any
+./slimproxy auth list  # the credential pool and each entry's state
+./slimproxy tunnel status
+./slimproxy routes     # which client<->provider dialect routes this build serves
+./slimproxy log        # query the structured event journal
+./slimproxy test       # send one real request end to end (spends upstream quota)
+./slimproxy version    # version and build provenance
+```
+
+The original flag spellings (`-check`, `-init`, `-routes`) still work and reach
+the same command functions.
+
+## Protocol support
+
+What has actually been exercised end to end against a real Claude backend
+(2026-07), versus what merely exists in the route table. "Works" means a real
+request went through and the response shape was checked — nothing more.
+
+| Client dialect | Endpoint | Non-stream | Stream | Tools | Notes |
+|---|---|---|---|---|---|
+| Anthropic | `/v1/messages`, `/v1/messages/count_tokens` | ✅ | ✅ | ✅ | Primary path (Claude Code). |
+| OpenAI chat | `/v1/chat/completions` | ✅ | ✅ | ✅ incl. tool-result round-trip | Response `id` keeps the upstream `msg_…` form instead of `chatcmpl-…`. |
+| OpenAI Responses | `/v1/responses` | ✅ structured `input` | ✅ | untested | **String-form `input` fails** (upstream translator bug): translated to empty `messages`, error returned in Anthropic shape. Codex CLI uses the structured form and works. |
+| Gemini | `:generateContent`, `:streamGenerateContent` | ✅ | ✅ | ✅ | **`:countTokens` fails** (upstream translator bug): builds a count request with `max_tokens`, which Anthropic rejects. |
+| interactions | — | untested | untested | untested | No client on hand speaks it. |
+
+Both failures above are translation bugs in upstream CLIProxyAPI, observable
+through any deployment of it, not just this one.
+
+Run `slimproxy routes` for the full matrix your build serves: 30 client→provider
+routes are reachable with request + streaming response transforms; token counts
+are expressible on only 9 of them.
+
+### Known behaviours to plan around
+
+- **`/v1/models` is a static registry, not a capability probe.** It advertises
+  models the upstream registry knows about; your credential may still refuse
+  some of them (a subscription credential 404s on models outside its plan).
+  The registry also gates serving: a model absent from it is refused even if
+  your credential could serve it.
+- **The upstream injects the Claude Code system prompt** (~1.4k tokens) into
+  every request as part of client emulation. Non-Claude-Code clients will see
+  the assistant identify as "Claude Code" and count those tokens in usage.
+- **Refusal marking varies by dialect.** Anthropic clients receive the native
+  `stop_reason:"refusal"` untouched; OpenAI chat clients get
+  `finish_reason:"content_filter"`; every other dialect currently receives an
+  empty completion plus a WARN in the log (see [proxy/refusal.go](proxy/refusal.go)
+  for why).
+
+## Security posture
+
+| Request | Result |
+|---|---|
+| `GET /healthz` | 200 |
+| `GET /v1/models` no key | 401 |
+| `GET /v1/models` wrong key | 401 |
+| `GET /v1/models` correct key | 200 |
+| `GET /v0/management/config` | 404 |
+| `GET /management.html` | 404 |
+| config with empty `api-keys` | refuses to start |
+| config with a typo'd key | refuses to start, names the key |
+
+Inbound auth is fail-*closed*: CLIProxyAPI's own middleware accepts every
+request when no key is configured, so slimproxy refuses to start rather than
+inherit that. `MANAGEMENT_PASSWORD` in the environment also makes it refuse —
+that variable alone enables CLIProxyAPI's full management API
+(`internal/api/server.go:400-404`) and cannot be suppressed from outside the
+module, so refusing is the only alternative to lying about the posture.
+
+Found a security issue? See [SECURITY.md](SECURITY.md).
+
+## Documentation
+
+| | |
+|---|---|
+| [docs/GUIDE.md](docs/GUIDE.md) | 使用指南。从零开始，每个命令什么时候用、输出怎么读、出问题怎么查。 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构剖析。每个设计决定在什么约束下做出，以及改哪里会出事。 |
+| [deploy/TUNNEL.md](deploy/TUNNEL.md) | Cloudflare Tunnel 的一次性配置（把本机端口暴露到外网）。 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Build, test, and what a change needs to carry. |
+
+Most documentation and all CLI output is in Chinese; this README and TUNNEL.md
+are in English. That split is deliberate — the CLI's audience is the author's
+circle first — but contributions translating either direction are welcome.
+
+## Package map
+
+| | |
+|---|---|
+| `proxy/` | Minimal reverse proxy over `sdk/cliproxy.Builder`. Everything not needed is pinned off. |
+| `tui/` | Full-screen terminal dashboard (bubbletea + lipgloss). Presentation only. |
+| `diag/` | Deployment diagnostics. Never reports an unanswered question as healthy. |
+| `tunnel/` | Operates the cloudflared child process: three-state status, start, stop. |
+| `credentials/` | Inspects and manages the upstream OAuth credential pool. |
+| `metrics/` | Completed-request telemetry, read in-process by the dashboard. |
+| `journal/` | Structured event stream: one JSON object per request and per state change. |
+| `translate/` | Typed, fail-loud facade over `sdk/translator`. Usable on its own — 14 indirect dependencies. **Not on the serving path**: CLIProxyAPI's executors call `sdktranslator` directly, so the guard for that path lives in `proxy/untranslated.go`. |
+| `fsperm/` | Restricts sensitive paths to the current user. On Windows the permission bits are not access control. |
+| `cmd/slimproxy` | CLI: `serve`, `check`, `init`, `status`, `doctor`, `auth`, `tunnel`, `routes`, `log`, `test`, `version`, `help`. |
+
+---
+
+The rest of this file is reference material: what "slim" is and is not, how the
+dashboard behaves, the translator facade's contract, and configuration notes
+worth knowing before something surprises you.
+
+## What "slim" does and does not mean
+
+**Does**: the configuration and runtime surface. One config file with 16 keys instead of
+~200. No management API, no control panel, no plugin host, no pprof, no Redis usage queue.
+Unknown config keys are errors, not silently ignored. Inbound auth is fail-*closed*.
+
+**Does not**: the dependency tree or the binary size. The provider executors — which carry
+the upstream client emulation — live in CLIProxyAPI's `internal/` tree. Go's
+internal-package rule makes `sdk/cliproxy.Builder` the only way for another module to reach
+them, and building a `Service` links gin, pion/webrtc, redis and lumberjack whether or not
+those subsystems run. Genuinely shrinking that requires forking CLIProxyAPI, which trades
+the dependency tree for permanent merge burden on the emulation layer.
+
+**The emulation layer is used exactly as CLIProxyAPI ships it.** Nothing in this module
+modifies, extends, or hardens it.
+
+## Dashboard
+
+`slimproxy` with no arguments serves *and* draws the panel, in one process.
+There is no HTTP surface behind it: the panel reads the collector in memory and
+calls the same functions the subcommands do.
+
 Press `/` for commands: `tunnel status|up|down`, `auth list|rm`, `doctor`,
 `routes`, `quit`. The panel above the prompt never reflows — the completion list
 grows downward from outside the frame, so the state you are reading stays put
@@ -166,7 +206,7 @@ while you type.
 
 **Destructive commands state the cost before you press Enter.** `tunnel down`
 does not say "stop the tunnel", it says how many edge connections are live and
-which hostname stops answering. Then it asks y/n.
+which hostnames stop answering. Then it asks y/n.
 
 ### What it deliberately does not do
 
@@ -198,10 +238,6 @@ which hostname stops answering. Then it asks y/n.
   single writer surface and a logrus line lands in the middle of a frame. Panel
   mode turns on file logging if it was off, rather than discarding the lines —
   `slimproxy check` reports where they go.
-- **`MANAGEMENT_PASSWORD` makes slimproxy refuse to start.** CLIProxyAPI enables
-  its full management API from that variable alone
-  (`internal/api/server.go:400-404`), which cannot be suppressed from outside
-  the module. Refusing is the only alternative to lying about the posture.
 
 ## Generated state
 
@@ -270,13 +306,6 @@ contract:
   (`data: [DONE]`, a bare newline, or nothing). Emit it in the layer that owns the HTTP
   response.
 
-### Route coverage
-
-30 client→provider routes are reachable, all with request + streaming response transforms.
-Token counts are expressible on only 9 of them — a pinned set, not a rule: a Claude or
-Gemini client dialect is necessary but not sufficient, since `interactions`-as-provider has
-none. Run `slimproxy routes` for the current matrix.
-
 ## Configuration notes worth knowing
 
 - **`request-retry: 0` disables retry entirely.** CLIProxyAPI ships no default for it, and
@@ -287,6 +316,9 @@ none. Run `slimproxy routes` for the current matrix.
 - **Shutdown is not graceful after 30s uptime.** CLIProxyAPI establishes its shutdown
   deadline at startup rather than at signal time, so a long-lived process cuts in-flight
   streams instead of draining them.
+
+See [slimproxy.example.yaml](slimproxy.example.yaml) for the full key set with
+comments.
 
 ## Open decision
 
@@ -303,3 +335,7 @@ proxy — clone and `go build ./cmd/slimproxy`, nothing else required.
 `slimproxy version` prints the exact upstream version a binary was built
 against; include it in bug reports, since the translation layer's behaviour is
 the upstream's.
+
+## License
+
+MIT — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
