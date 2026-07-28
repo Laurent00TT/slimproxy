@@ -1,0 +1,74 @@
+# slimproxy configuration.
+#
+# This is the entire knob set. Anything not here is pinned off by the proxy
+# package -- run `slimproxy -check` to see what that resolves to.
+
+# Listen address. Leave host empty to bind all interfaces.
+host: "127.0.0.1"
+port: 8317
+
+# Keys inbound clients must present.
+#
+# Required. CLIProxyAPI's inbound auth is fail-open -- with no key configured
+# every request is accepted, on a process holding live subscription
+# credentials. Set allow-unauthenticated: true only if the port is genuinely
+# unreachable from outside this host.
+api-keys:
+  - "change-me-to-something-random"
+allow-unauthenticated: false
+
+# Directory holding OAuth credential files, as written by
+# "slimproxy auth add <provider>". Created if absent; the file watcher picks up
+# new credentials without a restart.
+auth-dir: "auths"
+
+# Optional upstream proxy. A per-credential proxy-url in the credential file
+# takes precedence over this.
+proxy-url: ""
+
+# Upstream retry behaviour.
+#
+# request-retry is the OUTER attempt cap, not an HTTP retry count. At 0 the
+# cooldown-aware retry loop is skipped entirely and a request makes a single
+# pass over the credential pool. CLIProxyAPI itself ships no default here.
+request-retry: 3
+max-retry-interval: 30
+max-retry-credentials: 0
+
+# Diagnostics.
+#
+# request-log writes full request AND response bodies to disk. Redaction is
+# header/query-name based only; bodies are written verbatim, so anything
+# secret carried in a body is logged in the clear. Treat the log directory as
+# secret material if you turn this on.
+#
+# log-to-file is forced on when the full-screen panel runs (slimproxy on a
+# terminal). The panel owns stdout, so a log line written there would land in
+# the middle of a frame -- the lines are redirected rather than dropped, and
+# `slimproxy check` reports the resulting path.
+debug: false
+request-log: false
+log-to-file: false
+
+# Where file logs go when log-to-file is on (or forced on by panel mode).
+# Empty means "logs" under the working directory.
+log-dir: ""
+
+# Where request-log bodies land when request-log is on. Empty means
+# "<log-dir>/requests". Treat as secret material -- see request-log above.
+request-log-dir: ""
+
+# How many days of the structured event stream to keep, under <log-dir>/events.
+#
+# One JSON object per completed request and per state change (proxy start,
+# tunnel up/down, credential removed, doctor verdict), all on one timeline --
+# which is what makes "why was that slow last Tuesday" answerable. Query it with
+# "slimproxy log".
+#
+# Holds no request bodies and no headers, but it does name credentials and
+# hostnames, so it is bounded rather than kept forever. Zero means 7.
+journal-days: 7
+
+# Optional model allowlist. Empty serves everything the loaded credentials
+# expose. Matching is exact -- see proxy.Config.AllowModel before relying on it.
+models: []

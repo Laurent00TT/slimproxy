@@ -1,0 +1,48 @@
+# Built binaries. Anchored with a leading slash on purpose: a bare "slimproxy"
+# pattern matches at any depth and matches directories, so it would silently
+# ignore the entire cmd/slimproxy/ package -- the first commit would ship a
+# repo with no main package and no warning from git.
+/slimproxy
+*.exe
+
+# Generated on every start; contains inbound API keys. Per-port since two
+# instances in one directory would otherwise overwrite each other's.
+slimproxy.effective.yaml
+slimproxy.*.effective.yaml
+
+# Operator config; contains secrets. Commit slimproxy.example.yaml instead.
+slimproxy.yaml
+
+# OAuth credential material.
+auths/
+
+# Guard against stray credential copies landing in source directories. A real
+# one was once found sitting next to credentials.go, where "git add ." would
+# have staged it with the code; the package's own JSON fixtures live only in
+# t.TempDir, so nothing legitimate matches this.
+credentials/*.json
+
+# Personal measurement artifacts from tunnel latency debugging.
+deploy/argo-snapshots/
+
+# Runtime state written by "slimproxy tunnel up -detach"
+cloudflared.pid.json
+cloudflared.log
+
+# Logs. Not merely noise: logs/requests/ holds verbatim request and response
+# bodies when request-log is on, and redaction there is header-name based only,
+# so anything secret carried in a body is on disk in the clear. logs/ also
+# receives stray-stdout.log in panel mode.
+logs/
+run.log
+
+# Structured event stream. No bodies or headers, but it names credentials and
+# hostnames, and it is covered by logs/ above -- listed here so the intent is
+# explicit if logs/ is ever narrowed.
+logs/events/
+
+# Backups left by refactors, and the debris of interrupted builds.
+_backup_*/
+*.bak
+*.bak-*
+*~

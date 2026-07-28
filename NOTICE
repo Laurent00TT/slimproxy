@@ -1,0 +1,16 @@
+slimproxy
+Copyright (c) 2026 slimproxy contributors
+Licensed under the MIT License (see LICENSE).
+
+This project depends on CLIProxyAPI
+(https://github.com/router-for-me/CLIProxyAPI), MIT License,
+Copyright (c) Luis Pater and Router-For.ME.
+
+Binary releases of slimproxy link compiled code from CLIProxyAPI and other Go
+module dependencies (bubbletea, lipgloss, gin, and their transitive
+dependencies), each under its own license (MIT / BSD / Apache-2.0). Their
+license texts are preserved in the Go module cache paths recorded in go.sum;
+a bundled third-party license file should accompany binary release artifacts.
+
+slimproxy is not affiliated with Anthropic, OpenAI, Google, Cloudflare, or the
+CLIProxyAPI project.

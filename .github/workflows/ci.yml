@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is where the project is developed and operated; Linux is the
+        # matrix's reason to exist -- the test suite is hermetic, but
+        # platform-specific process handling (tunnel/process.go, fsperm/) has
+        # already grown one Linux-only bug that no amount of Windows testing
+        # could catch.
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...

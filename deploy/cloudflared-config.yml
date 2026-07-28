@@ -1,0 +1,49 @@
+# cloudflared tunnel config for slimproxy.
+#
+# Copy to  C:\Users\<you>\.cloudflared\config.yml  and replace the two
+# placeholders below. Everything else is deliberate -- read the comments before
+# changing it.
+#
+# Why a tunnel rather than a port forward: cloudflared makes an OUTBOUND
+# connection to Cloudflare, so no inbound port is opened, no public IP is
+# required (CGNAT is fine), and TLS terminates at Cloudflare with a certificate
+# you do not have to manage. slimproxy keeps listening on plain HTTP on
+# 127.0.0.1 and never becomes directly reachable.
+
+tunnel: REPLACE_WITH_TUNNEL_ID
+credentials-file: C:\Users\<you>\.cloudflared\REPLACE_WITH_TUNNEL_ID.json
+
+# Transport to the Cloudflare edge. Left to cloudflared by default, which picks
+# QUIC (UDP 7844) and is the better choice when UDP works.
+#
+# Uncomment this when UDP to the edge does not work. The usual cause on a
+# desktop is a local proxy / VPN in fake-ip mode: it answers the DNS query for
+# region1.v2.argotunnel.com with a 198.18.x.x address and then forwards TCP but
+# not UDP, so QUIC times out forever while TCP succeeds. cloudflared's own
+# startup pre-check prints exactly this -- UDP FAIL, TCP PASS -- so read it
+# before guessing.
+#
+# The better fix is to make the proxy route *.argotunnel.com direct, then leave
+# this commented out and get QUIC back.
+# protocol: http2
+
+# Keep the connection warm and fail fast on a dead edge.
+originRequest:
+  connectTimeout: 10s
+  # No timeout on the response body: slimproxy streams SSE, and any read
+  # deadline here would cut long completions mid-flight.
+  noHappyEyeballs: false
+
+ingress:
+  # ── 1. Everything on the hostname goes to slimproxy. ────────────────────
+  #
+  # slimproxy serves only the API (protected by api-keys); it has no browser
+  # UI, so there is nothing else to carve out here. One tunnel serves as many
+  # hostnames as it has rules -- to add a domain, duplicate this rule and run
+  # `cloudflared tunnel route dns <tunnel-id> <hostname>` for the new name.
+  - hostname: REPLACE_WITH_HOSTNAME
+    service: http://127.0.0.1:8317
+
+  # ── 2. Catch-all. Required by cloudflared: the last rule must have no
+  #       hostname. Anything not matched above is refused rather than routed.
+  - service: http_status:404
