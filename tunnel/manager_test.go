@@ -465,8 +465,16 @@ func TestBinaryMatchIsExactNotSubstring(t *testing.T) {
 }
 
 func TestExpectedImageNameFallsBack(t *testing.T) {
-	if got := expectedImageName(`C:\tools\cloudflared.exe`); got != "cloudflared.exe" {
-		t.Errorf("expectedImageName = %q, want the basename", got)
+	// The path is built with filepath.Join rather than written literally.
+	// expectedImageName delegates to filepath.Base, which follows the host's
+	// separator rules -- and so does the value it reads, since record.Binary
+	// is whatever exec.LookPath returned on this machine. A hardcoded
+	// `C:\tools\cloudflared.exe` asserted Windows semantics everywhere and
+	// failed on Linux, where "\" is an ordinary filename character and the
+	// whole string is its own basename.
+	full := filepath.Join("tools", "cloudflared.exe")
+	if got := expectedImageName(full); got != "cloudflared.exe" {
+		t.Errorf("expectedImageName(%q) = %q, want the basename", full, got)
 	}
 	if got := expectedImageName(""); got == "" {
 		t.Error("empty binary path produced no expected name")
