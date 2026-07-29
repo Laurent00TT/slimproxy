@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/Laurent00TT/slimproxy/metrics"
 )
 
@@ -111,6 +113,39 @@ func TestNoEmptyClaimWhileSomethingRuns(t *testing.T) {
 	}
 	if !strings.Contains(out, pendingMark) {
 		t.Errorf("进行中的行没渲染出来:\n%s", out)
+	}
+}
+
+// TestHostilePathCannotBreakTheFrame pins the sanitize line for the newest
+// externally-controlled field on the panel.
+//
+// Pending.Path is whatever the client sent, and this proxy hangs off a public
+// tunnel that is being scanned as a matter of routine. A path carrying an
+// escape sequence or a newline reaches the renderer verbatim -- the defence is
+// renderSegs sanitising at the single point every row passes through, and this
+// test exists so that a future pendingRow "optimisation" bypassing renderSegs
+// fails here instead of handing scanners a way to scramble the operator's
+// terminal.
+func TestHostilePathCannotBreakTheFrame(t *testing.T) {
+	m := sampleModel(90, 22)
+	m.stats.Pending = []metrics.Pending{
+		{At: fixedNow.Add(-3 * time.Second), Path: "/v1/\x1b[2J\x07evil\npath"},
+	}
+
+	out := m.View()
+	for _, forbidden := range []string{"\x1b[2J", "\x07"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("控制序列原样进了帧: %q", forbidden)
+		}
+	}
+	// The frame must also keep its shape: an injected newline that survived
+	// would add a row and shear every border below it. lipgloss.Width is what
+	// the panel's own width tests measure with -- it ignores the colour codes
+	// styling adds.
+	for i, line := range strings.Split(out, "\n") {
+		if lw := lipgloss.Width(line); lw > 90 {
+			t.Errorf("第 %d 行宽 %d，超出面板", i, lw)
+		}
 	}
 }
 
