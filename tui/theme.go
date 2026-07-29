@@ -40,13 +40,13 @@ func fg(c lipgloss.Color) lipgloss.Style {
 }
 
 var (
-	sFrame = fg(colFrame)               // box-drawing characters
-	sLabel = fg(colDim)                 // 监听 / 隧道 / 凭据 ...
-	sText  = fg(colFG)                  // ordinary values
-	sNum   = fg(colAmber).Bold(true)    // the numbers being watched
-	sOK    = fg(colOlive)               // ● healthy
-	sBad   = fg(colClay)                // ▲ needs attention
-	sPlain = lipgloss.NewStyle()        // outside the panel: terminal's own colours
+	sFrame = fg(colFrame)            // box-drawing characters
+	sLabel = fg(colDim)              // 监听 / 隧道 / 凭据 ...
+	sText  = fg(colFG)               // ordinary values
+	sNum   = fg(colAmber).Bold(true) // the numbers being watched
+	sOK    = fg(colOlive)            // ● healthy
+	sBad   = fg(colClay)             // ▲ needs attention
+	sPlain = lipgloss.NewStyle()     // outside the panel: terminal's own colours
 	sDimO  = lipgloss.NewStyle().Foreground(colDim)
 	sAmbO  = lipgloss.NewStyle().Foreground(colAmber)
 

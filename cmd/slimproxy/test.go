@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Laurent00TT/slimproxy/i18n"
 	"github.com/Laurent00TT/slimproxy/proxy"
 )
 
@@ -32,9 +33,9 @@ func cmdTest(cx *cliContext, args []string) error {
 	cmd := lookup("test")
 	fs := newFlagSet(cx, cmd)
 	bindConfigOnly(fs, cx)
-	model := fs.String("model", "", "要请求的模型；留空则取 /v1/models 的第一个")
-	prompt := fs.String("prompt", "Say OK.", "发送的提示词")
-	timeout := fs.Int("timeout", 60, "整体超时（秒）")
+	model := fs.String("model", "", i18n.T("要请求的模型；留空则取 /v1/models 的第一个", "model to request; empty takes the first from /v1/models"))
+	prompt := fs.String("prompt", "Say OK.", i18n.T("发送的提示词", "prompt to send"))
+	timeout := fs.Int("timeout", 60, i18n.T("整体超时（秒）", "overall timeout (seconds)"))
 	if err := cx.parse(fs, cmd, args); err != nil {
 		return skipHandled(err)
 	}
@@ -56,7 +57,7 @@ func cmdTest(cx *cliContext, args []string) error {
 	base := "http://" + reachableAddr(cfg)
 	client := &http.Client{}
 
-	fmt.Fprintf(cx.stdout, "目标 %s\n", base)
+	fmt.Fprintf(cx.stdout, i18n.T("目标 %s\n", "target %s\n"), base)
 
 	chosen := *model
 	if chosen == "" {
@@ -64,11 +65,11 @@ func cmdTest(cx *cliContext, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(cx.stdout, "模型 %s（未指定，取自 /v1/models 的第一个）\n", chosen)
+		fmt.Fprintf(cx.stdout, i18n.T("模型 %s（未指定，取自 /v1/models 的第一个）\n", "model %s (unspecified; first from /v1/models)\n"), chosen)
 	} else {
-		fmt.Fprintf(cx.stdout, "模型 %s\n", chosen)
+		fmt.Fprintf(cx.stdout, i18n.T("模型 %s\n", "model %s\n"), chosen)
 	}
-	fmt.Fprintf(cx.stdout, "这会向上游发出一个真实请求，消耗订阅配额。\n\n")
+	fmt.Fprint(cx.stdout, i18n.T("这会向上游发出一个真实请求，消耗订阅配额。\n\n", "this sends one real request upstream and consumes subscription quota.\n\n"))
 
 	started := time.Now()
 	body, status, err := postChat(ctx, client, base, key, chosen, *prompt)
@@ -82,17 +83,21 @@ func cmdTest(cx *cliContext, args []string) error {
 	case status == http.StatusOK:
 		return reportSuccess(cx, body, took)
 	case status == http.StatusUnauthorized:
-		return fmt.Errorf("认证失败（401）。配置里的 api-keys 与正在运行的实例不一致——"+
-			"该实例可能是用另一份配置启动的。用 \"slimproxy status\" 确认端口 %s 上跑的是什么",
+		return fmt.Errorf(i18n.T(
+			"认证失败（401）。配置里的 api-keys 与正在运行的实例不一致——该实例可能是用另一份配置启动的。用 \"slimproxy status\" 确认端口 %s 上跑的是什么",
+			"authentication failed (401). The api-keys in this config disagree with the running instance -- it may have been started with a different config. Use \"slimproxy status\" to confirm what is on port %s"),
 			cfg.Addr())
 	case status == http.StatusTooManyRequests:
-		return fmt.Errorf("上游限流（429），耗时 %s。链路本身是通的：请求到达了上游并被拒绝。"+
-			"等待冷却，或添加更多凭据", shortSeconds(took))
+		return fmt.Errorf(i18n.T(
+			"上游限流（429），耗时 %s。链路本身是通的：请求到达了上游并被拒绝。等待冷却，或添加更多凭据",
+			"upstream rate limit (429) after %s. The chain itself works: the request reached the upstream and was refused. Wait out the cooldown, or add credentials"), shortSeconds(took))
 	case status >= 500:
-		return fmt.Errorf("上游返回 %d，耗时 %s。运行 \"slimproxy doctor\" 检查上游可达性与 DNS 劫持\n响应: %s",
+		return fmt.Errorf(i18n.T(
+			"上游返回 %d，耗时 %s。运行 \"slimproxy doctor\" 检查上游可达性与 DNS 劫持\n响应: %s",
+			"upstream returned %d after %s. Run \"slimproxy doctor\" to check reachability and DNS hijacking\nresponse: %s"),
 			status, shortSeconds(took), truncateBody(body))
 	default:
-		return fmt.Errorf("返回 %d，耗时 %s\n响应: %s", status, shortSeconds(took), truncateBody(body))
+		return fmt.Errorf(i18n.T("返回 %d，耗时 %s\n响应: %s", "returned %d after %s\nresponse: %s"), status, shortSeconds(took), truncateBody(body))
 	}
 }
 
@@ -133,10 +138,11 @@ func firstModel(ctx context.Context, c *http.Client, base, key string) (string, 
 	case resp.StatusCode == http.StatusUnauthorized:
 		// Naming -model here would be misleading: the request never got past
 		// authentication, so no model would help.
-		return "", errors.New("认证失败（401）。这份配置里的 api-keys 与正在运行的实例不一致——" +
-			"该实例可能是用另一份配置启动的。用 \"slimproxy status\" 确认端口上跑的是什么")
+		return "", errors.New(i18n.T(
+			"认证失败（401）。这份配置里的 api-keys 与正在运行的实例不一致——该实例可能是用另一份配置启动的。用 \"slimproxy status\" 确认端口上跑的是什么",
+			"authentication failed (401). The api-keys in this config disagree with the running instance -- it may have been started with a different config. Use \"slimproxy status\" to confirm what is on the port"))
 	case resp.StatusCode != http.StatusOK:
-		return "", fmt.Errorf("无法获取模型列表（%d）：%s\n用 -model 手动指定一个",
+		return "", fmt.Errorf(i18n.T("无法获取模型列表（%d）：%s\n用 -model 手动指定一个", "cannot fetch the model list (%d): %s\nname one with -model"),
 			resp.StatusCode, truncateBody(raw))
 	}
 
@@ -146,11 +152,12 @@ func firstModel(ctx context.Context, c *http.Client, base, key string) (string, 
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return "", fmt.Errorf("模型列表无法解析：%w\n用 -model 手动指定一个", err)
+		return "", fmt.Errorf(i18n.T("模型列表无法解析：%w\n用 -model 手动指定一个", "the model list does not parse: %w\nname one with -model"), err)
 	}
 	if len(parsed.Data) == 0 {
-		return "", errors.New("代理没有报告任何可用模型；" +
-			"通常意味着凭据池为空或全部失效，运行 \"slimproxy auth list\" 查看")
+		return "", errors.New(i18n.T(
+			"代理没有报告任何可用模型；通常意味着凭据池为空或全部失效，运行 \"slimproxy auth list\" 查看",
+			"the proxy reports no models; usually the credential pool is empty or all expired -- run \"slimproxy auth list\""))
 	}
 	return parsed.Data[0].ID, nil
 }
@@ -205,27 +212,27 @@ func reportSuccess(cx *cliContext, body []byte, took time.Duration) error {
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return fmt.Errorf("返回 200 但响应无法解析：%w\n响应: %s", err, truncateBody(body))
+		return fmt.Errorf(i18n.T("返回 200 但响应无法解析：%w\n响应: %s", "returned 200 but the response does not parse: %w\nresponse: %s"), err, truncateBody(body))
 	}
 	if len(parsed.Choices) == 0 {
-		return fmt.Errorf("返回 200 但没有任何 choice，耗时 %s。\n响应: %s",
+		return fmt.Errorf(i18n.T("返回 200 但没有任何 choice，耗时 %s。\n响应: %s", "returned 200 with no choice at all after %s.\nresponse: %s"),
 			shortSeconds(took), truncateBody(body))
 	}
 
 	first := parsed.Choices[0]
 	content := strings.TrimSpace(first.Message.Content)
 
-	fmt.Fprintf(cx.stdout, "成功，耗时 %s\n", shortSeconds(took))
+	fmt.Fprintf(cx.stdout, i18n.T("成功，耗时 %s\n", "success after %s\n"), shortSeconds(took))
 	fmt.Fprintf(cx.stdout, "  finish_reason  %s\n", orDash(first.FinishReason))
 	if parsed.Usage.TotalTokens > 0 {
 		fmt.Fprintf(cx.stdout, "  tokens         %d\n", parsed.Usage.TotalTokens)
 	}
-	fmt.Fprintf(cx.stdout, "  回复           %s\n", orDash(truncateOneLine(content, 60)))
+	fmt.Fprintf(cx.stdout, i18n.T("  回复           %s\n", "  reply          %s\n"), orDash(truncateOneLine(content, 60)))
 
 	if content == "" {
-		fmt.Fprintf(cx.stdout, "\n注意：状态码是 200 但回复为空。"+
-			"若 finish_reason 是 content_filter，说明上游按策略拒绝了这次请求——"+
-			"链路是通的。\n")
+		fmt.Fprint(cx.stdout, i18n.T(
+			"\n注意：状态码是 200 但回复为空。若 finish_reason 是 content_filter，说明上游按策略拒绝了这次请求——链路是通的。\n",
+			"\nnote: status 200 but the reply is empty. If finish_reason is content_filter the upstream refused this request on policy -- the chain itself works.\n"))
 	}
 	return nil
 }
@@ -234,15 +241,17 @@ func reportSuccess(cx *cliContext, body []byte, took time.Duration) error {
 // almost always means it is not running.
 func describeTransportError(err error, base string) error {
 	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("请求超时。代理接受了连接但没有在期限内完成——"+
-			"运行 \"slimproxy doctor\" 检查上游可达性，或用 -timeout 延长")
+		return errors.New(i18n.T(
+			"请求超时。代理接受了连接但没有在期限内完成——运行 \"slimproxy doctor\" 检查上游可达性，或用 -timeout 延长",
+			"the request timed out. The proxy accepted the connection but did not finish in time -- run \"slimproxy doctor\" to check upstream reachability, or extend -timeout"))
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) || strings.Contains(err.Error(), "connect") {
-		return fmt.Errorf("无法连接 %s：%w\n代理似乎没有在运行。先启动它（另开一个终端运行 slimproxy），"+
-			"或用 \"slimproxy status\" 确认", base, err)
+		return fmt.Errorf(i18n.T(
+			"无法连接 %s：%w\n代理似乎没有在运行。先启动它（另开一个终端运行 slimproxy），或用 \"slimproxy status\" 确认",
+			"cannot connect to %s: %w\nthe proxy does not seem to be running. Start it first (run slimproxy in another terminal), or confirm with \"slimproxy status\""), base, err)
 	}
-	return fmt.Errorf("请求失败: %w", err)
+	return fmt.Errorf(i18n.T("请求失败: %w", "the request failed: %w"), err)
 }
 
 func shortSeconds(d time.Duration) string {

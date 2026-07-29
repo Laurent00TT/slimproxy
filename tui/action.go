@@ -10,6 +10,7 @@ import (
 
 	"github.com/Laurent00TT/slimproxy/credentials"
 	"github.com/Laurent00TT/slimproxy/diag"
+	"github.com/Laurent00TT/slimproxy/i18n"
 	"github.com/Laurent00TT/slimproxy/tunnel"
 )
 
@@ -94,10 +95,10 @@ type actionDoneMsg struct {
 func runTunnelStatus(m *Model, _ []string) actionSpec {
 	deps := m.deps
 	if deps.TunnelStatus == nil {
-		return actionSpec{Err: errors.New("此构建未接入隧道管理")}
+		return actionSpec{Err: errors.New(i18n.T("此构建未接入隧道管理", "this build has no tunnel management wired in"))}
 	}
 	return actionSpec{
-		Running:       "正在查询 Cloudflare…",
+		Running:       i18n.T("正在查询 Cloudflare…", "querying Cloudflare…"),
 		Timeout:       tunnelProbeTimeout,
 		RefreshTunnel: true,
 		Do: func(ctx context.Context) actionResult {
@@ -106,7 +107,7 @@ func runTunnelStatus(m *Model, _ []string) actionSpec {
 			// that could not be established must colour the panel as a
 			// failure, not read as a calm report that happens to contain the
 			// word 错误.
-			return actionResult{Title: "隧道状态", Lines: tunnelLines(st), Err: st.Err}
+			return actionResult{Title: i18n.T("隧道状态", "tunnel state"), Lines: tunnelLines(st), Err: st.Err}
 		},
 	}
 }
@@ -117,7 +118,7 @@ func runTunnelUp(m *Model, _ []string) actionSpec {
 		return actionSpec{Err: errors.New("此构建未接入隧道管理")}
 	}
 	return actionSpec{
-		Running:       "正在启动 cloudflared 并等待连接注册…",
+		Running:       i18n.T("正在启动 cloudflared 并等待连接注册…", "starting cloudflared, waiting for the connection to register…"),
 		RefreshTunnel: true,
 		Do: func(ctx context.Context) actionResult {
 			st, err := deps.TunnelUp(ctx)
@@ -126,14 +127,14 @@ func runTunnelUp(m *Model, _ []string) actionSpec {
 				// only place the reason exists. Kept as lines rather than
 				// squeezed onto the status line.
 				return actionResult{
-					Title: "启动隧道失败",
+					Title: i18n.T("启动隧道失败", "starting the tunnel failed"),
 					Lines: splitLines(err.Error()),
 					Err:   err,
 				}
 			}
-			note := "隧道已启动"
+			note := i18n.T("隧道已启动", "tunnel started")
 			if st.PID > 0 {
-				note = fmt.Sprintf("隧道已启动（PID %d）", st.PID)
+				note = fmt.Sprintf(i18n.T("隧道已启动（PID %d）", "tunnel started (PID %d)"), st.PID)
 			}
 			if st.Detail != "" {
 				return actionResult{Title: note, Lines: []string{st.Detail}}
@@ -149,12 +150,12 @@ func runTunnelDown(m *Model, _ []string) actionSpec {
 		return actionSpec{Err: errors.New("此构建未接入隧道管理")}
 	}
 	return actionSpec{
-		Running:       "正在停止 cloudflared…",
+		Running:       i18n.T("正在停止 cloudflared…", "stopping cloudflared…"),
 		RefreshTunnel: true,
 		Do: func(ctx context.Context) actionResult {
 			st, err := deps.TunnelDown(ctx)
 			if err != nil {
-				return actionResult{Title: "停止隧道失败", Lines: splitLines(err.Error()), Err: err}
+				return actionResult{Title: i18n.T("停止隧道失败", "stopping the tunnel failed"), Lines: splitLines(err.Error()), Err: err}
 			}
 			// Detail carries the case where nothing was actually stopped -- a
 			// process that had already died, a second unmanaged connector
@@ -163,7 +164,7 @@ func runTunnelDown(m *Model, _ []string) actionSpec {
 			if st.Detail != "" {
 				return actionResult{Title: "tunnel down", Lines: []string{st.Detail}}
 			}
-			return actionResult{Note: "隧道已停止"}
+			return actionResult{Note: i18n.T("隧道已停止", "tunnel stopped")}
 		},
 	}
 }
@@ -175,61 +176,61 @@ func runTunnelDown(m *Model, _ []string) actionSpec {
 // is the reading for a tunnel that is up and serving nobody, which is a
 // different and much worse situation.
 func tunnelLines(st tunnel.Status) []string {
-	out := []string{"状态      " + st.State.String()}
+	out := []string{i18n.T("状态      ", "state       ") + st.State.String()}
 	for i, h := range st.Hostnames {
 		// One line per hostname, label on the first only. This panel is where
 		// the full list lives -- the top bar collapses it to "host +N".
 		if i == 0 {
-			out = append(out, "主机名    "+h)
+			out = append(out, i18n.T("主机名    ", "hostname    ")+h)
 		} else {
-			out = append(out, "          "+h)
+			out = append(out, i18n.T("          ", "            ")+h)
 		}
 	}
 	if st.TunnelID != "" {
-		out = append(out, "隧道 ID   "+st.TunnelID)
+		out = append(out, i18n.T("隧道 ID   ", "tunnel id   ")+st.TunnelID)
 	}
 	if st.ConfiguredTunnelID != "" {
-		out = append(out, "配置中的  "+st.ConfiguredTunnelID+"（与运行中的不一致）")
+		out = append(out, i18n.T("配置中的  ", "configured  ")+st.ConfiguredTunnelID+i18n.T("（与运行中的不一致）", " (differs from the running one)"))
 	}
 	switch {
 	case st.ConnectionsKnown:
-		out = append(out, fmt.Sprintf("边缘连接  %d", st.Connections))
+		out = append(out, fmt.Sprintf(i18n.T("边缘连接  %d", "edge conns  %d"), st.Connections))
 	case st.ConnectionsErr != nil:
 		// The reason, not just the absence. "未能确认" alone left the operator
 		// unable to tell an expired Cloudflare token from a DNS failure.
-		out = append(out, "边缘连接  查询失败: "+st.ConnectionsErr.Error())
+		out = append(out, i18n.T("边缘连接  查询失败: ", "edge conns  query failed: ")+st.ConnectionsErr.Error())
 	case st.State != tunnel.Running:
 		// Nothing is running, so there is no count to have failed to read.
 		// Saying "未能确认" here reads like a probe that broke.
 	default:
-		out = append(out, "边缘连接  未能确认")
+		out = append(out, i18n.T("边缘连接  未能确认", "edge conns  unconfirmed"))
 	}
 	if st.EdgeFakeIP != "" {
-		out = append(out, "边缘地址  "+st.EdgeFakeIP+"（fake-ip 段，流量经本地代理，长连接易断）")
+		out = append(out, i18n.T("边缘地址  ", "edge addr   ")+st.EdgeFakeIP+i18n.T("（fake-ip 段，流量经本地代理，长连接易断）", " (fake-ip range; traffic goes via a local proxy, long-lived connections drop)"))
 	}
 	if st.PID > 0 {
-		managed := "由本进程管理"
+		managed := i18n.T("由本进程管理", "managed by this process")
 		if !st.Managed {
-			managed = "非本进程启动"
+			managed = i18n.T("非本进程启动", "not started by this process")
 		}
-		out = append(out, fmt.Sprintf("进程      PID %d（%s）", st.PID, managed))
+		out = append(out, fmt.Sprintf(i18n.T("进程      PID %d（%s）", "process     PID %d (%s)"), st.PID, managed))
 	} else if st.State == tunnel.Running && !st.Managed {
 		// Just the fact. The consequence -- that `tunnel down` cannot stop it
 		// -- is already in Status.Detail, which is appended below; saying it
 		// here too printed the same sentence twice in one panel.
-		out = append(out, "进程      非本进程启动")
+		out = append(out, i18n.T("进程      非本进程启动", "process     not started by this process"))
 	}
 	if st.ConfigPath != "" {
-		out = append(out, "配置文件  "+st.ConfigPath)
+		out = append(out, i18n.T("配置文件  ", "config      ")+st.ConfigPath)
 	}
 	if st.LogPath != "" {
-		out = append(out, "日志      "+st.LogPath)
+		out = append(out, i18n.T("日志      ", "log         ")+st.LogPath)
 	}
 	if st.Detail != "" {
 		out = append(out, "", st.Detail)
 	}
 	if st.Err != nil {
-		out = append(out, "", "错误: "+st.Err.Error())
+		out = append(out, "", i18n.T("错误: ", "error: ")+st.Err.Error())
 	}
 	return out
 }
@@ -239,30 +240,30 @@ func tunnelLines(st tunnel.Status) []string {
 func runAuthList(m *Model, _ []string) actionSpec {
 	deps := m.deps
 	if deps.Creds == nil {
-		return actionSpec{Err: errors.New("此构建未接入凭据管理")}
+		return actionSpec{Err: errors.New(i18n.T("此构建未接入凭据管理", "this build has no credential management wired in"))}
 	}
 	authDir := deps.AuthDir
 	return actionSpec{
-		Running:      "正在读取凭据目录…",
+		Running:      i18n.T("正在读取凭据目录…", "reading the credential directory…"),
 		Timeout:      credsReadTimeout,
 		RefreshCreds: true,
 		Do: func(ctx context.Context) actionResult {
 			creds, err := deps.Creds(ctx)
 			if err != nil {
-				return actionResult{Title: "读取凭据失败", Lines: splitLines(err.Error()), Err: err}
+				return actionResult{Title: i18n.T("读取凭据失败", "reading credentials failed"), Lines: splitLines(err.Error()), Err: err}
 			}
 			if len(creds) == 0 {
 				return actionResult{
-					Title: "凭据池为空",
+					Title: i18n.T("凭据池为空", "credential pool is empty"),
 					Lines: []string{
-						"目录  " + authDir,
+						i18n.T("目录  ", "dir  ") + authDir,
 						"",
-						"代理会启动并接受请求，但每一个都会因为没有可用凭据而失败。",
-						"退出后运行 slimproxy auth add <provider> 添加。",
+						i18n.T("代理会启动并接受请求，但每一个都会因为没有可用凭据而失败。", "The proxy starts and accepts requests, but every one fails for want of a usable credential."),
+						i18n.T("退出后运行 slimproxy auth add <provider> 添加。", "After quitting, run slimproxy auth add <provider> to add one."),
 					},
 				}
 			}
-			return actionResult{Title: fmt.Sprintf("凭据池（%d）", len(creds)), Lines: credLines(creds, time.Now())}
+			return actionResult{Title: fmt.Sprintf(i18n.T("凭据池（%d）", "credential pool (%d)"), len(creds)), Lines: credLines(creds, time.Now())}
 		},
 	}
 }
@@ -295,7 +296,7 @@ func credLines(creds []credentials.Credential, now time.Time) []string {
 		case c.Err != nil:
 			row += "  " + c.Err.Error()
 		case st == credentials.StatusUnknown:
-			row += "  文件中没有过期时间"
+			row += i18n.T("  文件中没有过期时间", "  no expiry in the file")
 		case !c.Expires.IsZero():
 			row += "  " + relTime(c.Expires, now)
 		}
@@ -309,9 +310,9 @@ func credLines(creds []credentials.Credential, now time.Time) []string {
 func relTime(t, now time.Time) string {
 	d := t.Sub(now)
 	if d < 0 {
-		return "已过期 " + shortDur(-d)
+		return i18n.T("已过期 ", "expired ") + shortDur(-d) + i18n.T("", " ago")
 	}
-	return shortDur(d) + " 后过期"
+	return shortDur(d) + i18n.T(" 后过期", " until expiry")
 }
 
 func runAuthRemove(m *Model, args []string) actionSpec {
@@ -321,15 +322,15 @@ func runAuthRemove(m *Model, args []string) actionSpec {
 	}
 	switch len(args) {
 	case 0:
-		return actionSpec{Err: errors.New("需要一个参数：/auth rm <名称或邮箱>")}
+		return actionSpec{Err: errors.New(i18n.T("需要一个参数：/auth rm <名称或邮箱>", "one argument required: /auth rm <name or email>"))}
 	case 1:
 	default:
-		return actionSpec{Err: fmt.Errorf("只接受一个参数，收到 %d 个：%s",
+		return actionSpec{Err: fmt.Errorf(i18n.T("只接受一个参数，收到 %d 个：%s", "takes exactly one argument, got %d: %s"),
 			len(args), strings.Join(args, " "))}
 	}
 	id := args[0]
 	return actionSpec{
-		Running:      "正在删除 " + truncate(id, 40) + "…",
+		Running:      i18n.T("正在删除 ", "removing ") + truncate(id, 40) + "…",
 		Timeout:      credsReadTimeout,
 		RefreshCreds: true,
 		Do: func(ctx context.Context) actionResult {
@@ -340,19 +341,19 @@ func runAuthRemove(m *Model, args []string) actionSpec {
 				// this interface does not expose.
 				if errors.Is(err, credentials.ErrLastUsable) {
 					return actionResult{
-						Title: "已拒绝删除",
+						Title: i18n.T("已拒绝删除", "removal refused"),
 						Lines: []string{
 							err.Error(),
 							"",
-							"确实要删除的话，退出后运行:",
+							i18n.T("确实要删除的话，退出后运行:", "To really remove it, quit and run:"),
 							"  slimproxy auth rm " + id + " -force",
 						},
 						Err: err,
 					}
 				}
-				return actionResult{Title: "删除失败", Lines: splitLines(err.Error()), Err: err}
+				return actionResult{Title: i18n.T("删除失败", "removal failed"), Lines: splitLines(err.Error()), Err: err}
 			}
-			return actionResult{Note: "已删除 " + c.Name}
+			return actionResult{Note: i18n.T("已删除 ", "removed ") + c.Name}
 		},
 	}
 }
@@ -368,7 +369,7 @@ func runAuthRemove(m *Model, args []string) actionSpec {
 func runAuthAdd(m *Model, args []string) actionSpec {
 	if len(args) == 0 {
 		return actionSpec{
-			Note: "登录需要浏览器交互，请按 q 退出后运行: slimproxy auth add <" +
+			Note: i18n.T("登录需要浏览器交互，请按 q 退出后运行: slimproxy auth add <", "login needs a browser; press q to quit, then run: slimproxy auth add <") +
 				strings.Join(credentials.ProviderNames(), "|") + ">",
 		}
 	}
@@ -377,11 +378,11 @@ func runAuthAdd(m *Model, args []string) actionSpec {
 	// otherwise-correct command line sends the operator to run it and hit the
 	// same error one step later.
 	if !credentials.KnownProvider(args[0]) {
-		return actionSpec{Err: fmt.Errorf("不支持的 provider %q（可用: %s）",
+		return actionSpec{Err: fmt.Errorf(i18n.T("不支持的 provider %q（可用: %s）", "unsupported provider %q (available: %s)"),
 			args[0], strings.Join(credentials.ProviderNames(), ", "))}
 	}
 	return actionSpec{
-		Note: "登录需要浏览器交互，请按 q 退出后运行: slimproxy auth add " + args[0],
+		Note: i18n.T("登录需要浏览器交互，请按 q 退出后运行: slimproxy auth add ", "login needs a browser; press q to quit, then run: slimproxy auth add ") + args[0],
 	}
 }
 
@@ -390,17 +391,17 @@ func runAuthAdd(m *Model, args []string) actionSpec {
 func runDoctor(m *Model, _ []string) actionSpec {
 	deps := m.deps
 	if deps.Doctor == nil {
-		return actionSpec{Err: errors.New("此构建未接入诊断")}
+		return actionSpec{Err: errors.New(i18n.T("此构建未接入诊断", "this build has no diagnostics wired in"))}
 	}
 	return actionSpec{
-		Running:       "正在运行诊断（可能需要数十秒）…",
+		Running:       i18n.T("正在运行诊断（可能需要数十秒）…", "running diagnostics (can take tens of seconds)…"),
 		RefreshTunnel: true,
 		RefreshCreds:  true,
 		Do: func(ctx context.Context) actionResult {
 			rep := deps.Doctor(ctx)
 			v := verdict(rep)
 			return actionResult{
-				Title:    fmt.Sprintf("诊断报告（%s，耗时 %s）", v, shortDur(rep.Took)),
+				Title:    fmt.Sprintf(i18n.T("诊断报告（%s，耗时 %s）", "diagnostic report (%s, took %s)"), v, shortDur(rep.Took)),
 				Lines:    reportLines(rep),
 				Level:    rep.Worst(),
 				HasLevel: true,
@@ -419,7 +420,7 @@ func verdict(rep diag.Report) string {
 		}
 	}
 	if len(parts) == 0 {
-		return "无检查项"
+		return i18n.T("无检查项", "no checks")
 	}
 	return strings.Join(parts, " · ")
 }
@@ -441,7 +442,7 @@ func reportLines(rep diag.Report) []string {
 			out = append(out, "         → "+r.Remedy)
 		}
 		if extra := r.ExtraErr(); extra != "" {
-			out = append(out, "         因: "+extra)
+			out = append(out, i18n.T("         因: ", "         cause: ")+extra)
 		}
 	}
 	return out
@@ -466,7 +467,7 @@ func runMonitor(m *Model, _ []string) actionSpec {
 		// command that appears to do nothing is indistinguishable from one that
 		// silently failed, and this one is most likely to be typed by someone
 		// who is not yet sure what it does.
-		return actionSpec{Note: "已经在监控面板"}
+		return actionSpec{Note: i18n.T("已经在监控面板", "already on the monitor panel")}
 	}
 	return actionSpec{Dismiss: true}
 }
@@ -476,7 +477,7 @@ func runMonitor(m *Model, _ []string) actionSpec {
 func runRoutes(m *Model, _ []string) actionSpec {
 	deps := m.deps
 	if deps.Routes == nil {
-		return actionSpec{Err: errors.New("此构建未接入路由清单")}
+		return actionSpec{Err: errors.New(i18n.T("此构建未接入路由清单", "this build has no route listing wired in"))}
 	}
 	return actionSpec{
 		Running: "…",
@@ -484,8 +485,8 @@ func runRoutes(m *Model, _ []string) actionSpec {
 		Do: func(context.Context) actionResult {
 			routes := deps.Routes()
 			if len(routes) == 0 {
-				return actionResult{Title: "没有注册任何翻译路由", Lines: []string{
-					"未注册的协议对不会报错，请求体会原样转发到上游。",
+				return actionResult{Title: i18n.T("没有注册任何翻译路由", "no translator routes registered"), Lines: []string{
+					i18n.T("未注册的协议对不会报错，请求体会原样转发到上游。", "Unregistered protocol pairs do not error; bodies are forwarded to the upstream untouched."),
 				}}
 			}
 			byClient := map[string][]string{}
@@ -505,7 +506,7 @@ func runRoutes(m *Model, _ []string) actionSpec {
 				lines = append(lines, pad(c, 14)+"→  "+strings.Join(providers, ", "))
 			}
 			return actionResult{
-				Title: fmt.Sprintf("翻译路由（%d 条）", len(routes)),
+				Title: fmt.Sprintf(i18n.T("翻译路由（%d 条）", "translator routes (%d)"), len(routes)),
 				Lines: lines,
 			}
 		},

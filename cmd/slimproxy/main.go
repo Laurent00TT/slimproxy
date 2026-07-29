@@ -74,7 +74,7 @@ func cmdServe(cx *cliContext, args []string) error {
 	cmd := lookup("serve")
 	fs := newFlagSet(cx, cmd)
 	bindCommon(fs, cx)
-	noTUI := fs.Bool("no-tui", false, "不启动全屏面板，只输出日志（重定向时自动生效）")
+	noTUI := fs.Bool("no-tui", false, i18n.T("不启动全屏面板，只输出日志（重定向时自动生效）", "no full-screen panel, logs only (automatic when redirected)"))
 	if err := cx.parse(fs, cmd, args); err != nil {
 		return skipHandled(err)
 	}
@@ -92,7 +92,7 @@ func cmdServe(cx *cliContext, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cx.stdout, "slimproxy 正在监听 %s（运行时配置: %s）\n", cfg.Addr(), rt.ConfigPath)
+	fmt.Fprintf(cx.stdout, i18n.T("slimproxy 正在监听 %s（运行时配置: %s）\n", "slimproxy listening on %s (runtime config: %s)\n"), cfg.Addr(), rt.ConfigPath)
 
 	// Cancel on SIGINT/SIGTERM. Note that CLIProxyAPI's shutdown deadline is
 	// established at startup rather than at signal time, so a process that has
@@ -187,9 +187,9 @@ func loadConfig(path string) (*proxy.Config, error) {
 		if os.IsNotExist(err) {
 			// The first thing a new user hits, so it names the fix rather than
 			// just the problem.
-			return nil, fmt.Errorf("找不到配置文件 %q；运行 \"slimproxy init\" 生成一份", path)
+			return nil, fmt.Errorf(i18n.T("找不到配置文件 %q；运行 \"slimproxy init\" 生成一份", "config file %q not found; run \"slimproxy init\" to generate one"), path)
 		}
-		return nil, fmt.Errorf("读取配置 %q 失败: %w", path, err)
+		return nil, fmt.Errorf(i18n.T("读取配置 %q 失败: %w", "reading config %q failed: %w"), path, err)
 	}
 	var cfg proxy.Config
 	// KnownFields makes a typo in the config an error instead of a silently
@@ -217,31 +217,31 @@ func printCheck(w io.Writer, cfg *proxy.Config, stateDir string) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "配置 OK\n\n")
-	fmt.Fprintf(w, "  监听      %s\n", cfg.Addr())
-	fmt.Fprintf(w, "  凭据目录  %s\n", orDefault(cfg.AuthDir, "auths"))
-	fmt.Fprintf(w, "  状态目录  %s\n", stateDir)
-	fmt.Fprintf(w, "  入站认证  %s\n", authSummary(cfg))
-	fmt.Fprintf(w, "  应用日志  %s\n", cfg.AppLogTarget())
-	fmt.Fprintf(w, "  请求日志  %s\n", cfg.RequestLogTarget())
-	fmt.Fprintf(w, "  上游重试  request-retry=%d max-retry-interval=%ds max-retry-credentials=%d\n",
+	fmt.Fprint(w, i18n.T("配置 OK\n\n", "config OK\n\n"))
+	fmt.Fprintf(w, i18n.T("  监听      %s\n", "  listen         %s\n"), cfg.Addr())
+	fmt.Fprintf(w, i18n.T("  凭据目录  %s\n", "  auth dir       %s\n"), orDefault(cfg.AuthDir, "auths"))
+	fmt.Fprintf(w, i18n.T("  状态目录  %s\n", "  state dir      %s\n"), stateDir)
+	fmt.Fprintf(w, i18n.T("  入站认证  %s\n", "  inbound auth   %s\n"), authSummary(cfg))
+	fmt.Fprintf(w, i18n.T("  应用日志  %s\n", "  app log        %s\n"), cfg.AppLogTarget())
+	fmt.Fprintf(w, i18n.T("  请求日志  %s\n", "  request log    %s\n"), cfg.RequestLogTarget())
+	fmt.Fprintf(w, i18n.T("  上游重试  request-retry=%d max-retry-interval=%ds max-retry-credentials=%d\n", "  upstream retry request-retry=%d max-retry-interval=%ds max-retry-credentials=%d\n"),
 		cfg.RequestRetry, cfg.MaxRetryInterval, cfg.MaxRetryCredentials)
 	if cfg.RequestRetry == 0 {
-		fmt.Fprintf(w, "            （request-retry=0 会完全跳过感知冷却的重试循环）\n")
+		fmt.Fprint(w, i18n.T("            （request-retry=0 会完全跳过感知冷却的重试循环）\n", "                 (request-retry=0 skips the cooldown-aware retry loop entirely)\n"))
 	}
 	if len(cfg.Models) == 0 {
-		fmt.Fprintf(w, "  模型      已加载凭据暴露的全部模型\n")
+		fmt.Fprint(w, i18n.T("  模型      已加载凭据暴露的全部模型\n", "  models         everything the loaded credentials expose\n"))
 	} else {
-		fmt.Fprintf(w, "  模型      %v（精确匹配）\n", cfg.Models)
+		fmt.Fprintf(w, i18n.T("  模型      %v（精确匹配）\n", "  models         %v (exact match)\n"), cfg.Models)
 	}
 	return nil
 }
 
 func authSummary(cfg *proxy.Config) string {
 	if len(cfg.APIKeys) > 0 {
-		return fmt.Sprintf("需要 %d 个 key", len(cfg.APIKeys))
+		return fmt.Sprintf(i18n.T("需要 %d 个 key", "%d keys required"), len(cfg.APIKeys))
 	}
-	return "无 —— 所有请求都会被接受（allow-unauthenticated）"
+	return i18n.T("无 —— 所有请求都会被接受（allow-unauthenticated）", "none -- every request is accepted (allow-unauthenticated)")
 }
 
 func orDefault(s, d string) string {
@@ -253,7 +253,7 @@ func orDefault(s, d string) string {
 
 func printRoutes(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "客户端协议\t上游协议\t请求\t流式响应\t非流式响应\tToken 计数")
+	fmt.Fprintln(tw, i18n.T("客户端协议\t上游协议\t请求\t流式响应\t非流式响应\tToken 计数", "client protocol\tupstream\trequest\tstreaming\tnon-streaming\ttoken counting"))
 	for _, c := range translate.Registered() {
 		fmt.Fprintf(tw, "%s\t%s\t%v\t%v\t%v\t%v\n",
 			c.Pair.Client, c.Pair.Provider,

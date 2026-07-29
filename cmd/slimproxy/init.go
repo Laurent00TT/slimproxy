@@ -12,6 +12,7 @@ import (
 
 	"github.com/Laurent00TT/slimproxy/credentials"
 	"github.com/Laurent00TT/slimproxy/fsperm"
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // initConfig writes a ready-to-run config so the first run needs no
@@ -100,7 +101,7 @@ func printNextSteps(w io.Writer, path, apiKey string) {
 	if runtime.GOOS == "windows" {
 		run = "slimproxy.exe"
 	}
-	fmt.Fprintf(w, `已写入 %s
+	fmt.Fprintf(w, i18n.T(`已写入 %s
 
 接下来:
 
@@ -123,6 +124,31 @@ func printNextSteps(w io.Writer, path, apiKey string) {
 
 想先看配置解析成什么样、而不绑定端口，运行 "%s check"。
 遇到问题运行 "%s doctor"。
-`, path, run, strings.Join(credentials.ProviderNames(), " / "),
+`, `Wrote %s
+
+Next:
+
+  1. Add an upstream credential (opens a browser to authorise)
+       %s auth add claude
+
+     Available providers: %s
+     The credential lands in the config's auth-dir; the file watcher picks it
+     up automatically, no restart needed.
+
+  2. Start it
+       %s
+
+     Run in a terminal and the full-screen panel opens too; with output
+     redirected it falls back to log mode.
+
+  3. Point your clients at it
+       OpenAI-compatible  http://127.0.0.1:8317/v1
+       Anthropic SDK      http://127.0.0.1:8317
+       Gemini SDK         http://127.0.0.1:8317
+     Bearer %s
+
+To see how the config resolves without binding the port, run "%s check".
+If something is off, run "%s doctor".
+`), path, run, strings.Join(credentials.ProviderNames(), " / "),
 		run, strings.TrimSpace(apiKey), run, run)
 }

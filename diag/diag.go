@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // Level classifies one check's outcome.
@@ -107,8 +109,8 @@ func (c Check) run(ctx context.Context) (res Result) {
 			res = Result{
 				Name:   c.Name,
 				Level:  Unknown,
-				Detail: fmt.Sprintf("检查过程 panic: %v", r),
-				Remedy: "这是 slimproxy 的缺陷，请报告",
+				Detail: fmt.Sprintf(i18n.T("检查过程 panic: %v", "a check panicked: %v"), r),
+				Remedy: i18n.T("这是 slimproxy 的缺陷，请报告", "this is a slimproxy defect; please report it"),
 			}
 		}
 		res.Name = c.Name
@@ -124,8 +126,8 @@ func (c Check) run(ctx context.Context) (res Result) {
 			if r := recover(); r != nil {
 				done <- Result{
 					Level:  Unknown,
-					Detail: fmt.Sprintf("检查过程 panic: %v", r),
-					Remedy: "这是 slimproxy 的缺陷，请报告",
+					Detail: fmt.Sprintf(i18n.T("检查过程 panic: %v", "a check panicked: %v"), r),
+					Remedy: i18n.T("这是 slimproxy 的缺陷，请报告", "this is a slimproxy defect; please report it"),
 				}
 			}
 		}()
@@ -140,8 +142,8 @@ func (c Check) run(ctx context.Context) (res Result) {
 		// so it will not leak on eventual completion.
 		return Result{
 			Level:  Unknown,
-			Detail: fmt.Sprintf("超时（%s）未得出结论", timeout),
-			Remedy: "重试；若持续超时说明被检查的对象本身无响应",
+			Detail: fmt.Sprintf(i18n.T("超时（%s）未得出结论", "timed out (%s) without a conclusion"), timeout),
+			Remedy: i18n.T("重试；若持续超时说明被检查的对象本身无响应", "retry; persistent timeouts mean the thing being checked is itself unresponsive"),
 			Err:    cctx.Err(),
 		}
 	}
@@ -235,8 +237,8 @@ func Run(ctx context.Context, checks []Check) Report {
 				out.Results = append(out.Results, Result{
 					Name:   remaining.Name,
 					Level:  Unknown,
-					Detail: "已取消，未执行",
-					Remedy: "重新运行 doctor",
+					Detail: i18n.T("已取消，未执行", "canceled before running"),
+					Remedy: i18n.T("重新运行 doctor", "run doctor again"),
 				})
 			}
 			break

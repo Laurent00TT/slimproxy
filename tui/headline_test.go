@@ -132,7 +132,7 @@ func TestCauseLabelsKeepTheColumnsApart(t *testing.T) {
 			Model: "claude-opus-5", Failed: true, Cause: cause,
 		}}
 
-		label := causeLabels[cause].text
+		label, _, _ := causeLabel(cause)
 		for _, line := range strings.Split(m.View(), "\n") {
 			i := strings.Index(line, label)
 			if i < 0 || !strings.Contains(line, "you@example.com") {

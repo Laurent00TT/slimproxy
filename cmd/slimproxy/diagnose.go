@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Laurent00TT/slimproxy/diag"
+	"github.com/Laurent00TT/slimproxy/i18n"
 	"github.com/Laurent00TT/slimproxy/proxy"
 	"github.com/Laurent00TT/slimproxy/tunnel"
 )
@@ -42,7 +43,7 @@ func (cx *cliContext) loadConfigForDiagnosis() (*proxy.Config, []string, error) 
 			// Still not fatal: on a fresh machine this is exactly when doctor is
 			// most useful, and the port, DNS, upstream and tunnel checks do not
 			// need a config at all.
-			return &proxy.Config{}, []string{fmt.Sprintf("配置文件 %s 不存在", cx.configPath)}, nil
+			return &proxy.Config{}, []string{fmt.Sprintf(i18n.T("配置文件 %s 不存在", "config file %s does not exist"), cx.configPath)}, nil
 		}
 		return nil, nil, fmt.Errorf("read config %q: %w", cx.configPath, err)
 	}
@@ -108,32 +109,32 @@ func cmdStatus(cx *cliContext, args []string) error {
 	target := targetFor(cfg, cx.configPath, typeErrs)
 	report := diag.Run(ctx, diag.Checks(target))
 
-	fmt.Fprintf(cx.stdout, "slimproxy 状态\n\n")
+	fmt.Fprint(cx.stdout, i18n.T("slimproxy 状态\n\n", "slimproxy status\n\n"))
 
 	tw := tabwriter.NewWriter(cx.stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(tw, "  监听\t%s\n", cfg.Addr())
+	fmt.Fprintf(tw, i18n.T("  监听\t%s\n", "  listen\t%s\n"), cfg.Addr())
 	if cfg.Host == "" {
 		// Say which address was tested. Printing 0.0.0.0 while probing loopback
 		// is how a check passes on one address and the proxy fails to bind
 		// another.
-		fmt.Fprintf(tw, "  \t（配置为绑定全部网卡，检查在 %s 上探测）\n", target.ProbeAddr())
+		fmt.Fprintf(tw, i18n.T("  \t（配置为绑定全部网卡，检查在 %s 上探测）\n", "  \t(configured to bind all interfaces; checks probe %s)\n"), target.ProbeAddr())
 	}
-	fmt.Fprintf(tw, "  配置\t%s\n", cx.configPath)
+	fmt.Fprintf(tw, i18n.T("  配置\t%s\n", "  config\t%s\n"), cx.configPath)
 	// The resolved directory, which is what the checks read and what the proxy
 	// loads from -- not the raw config string, which may contain an unexpanded ~.
-	fmt.Fprintf(tw, "  凭据目录\t%s\n", target.AuthDir)
+	fmt.Fprintf(tw, i18n.T("  凭据目录\t%s\n", "  auth dir\t%s\n"), target.AuthDir)
 	if target.TunnelName != "" {
 		host := target.TunnelHostname
 		if host == "" {
-			host = "（未在 ingress 中找到主机名）"
+			host = i18n.T("（未在 ingress 中找到主机名）", "(no hostname found in ingress)")
 		}
-		fmt.Fprintf(tw, "  隧道\t%s → %s\n", target.TunnelName, host)
+		fmt.Fprintf(tw, i18n.T("  隧道\t%s → %s\n", "  tunnel\t%s → %s\n"), target.TunnelName, host)
 	} else {
-		fmt.Fprintf(tw, "  隧道\t未配置\n")
+		fmt.Fprint(tw, i18n.T("  隧道\t未配置\n", "  tunnel\tnot configured\n"))
 	}
 	_ = tw.Flush()
 
-	fmt.Fprintf(cx.stdout, "\n检查项\n\n")
+	fmt.Fprint(cx.stdout, i18n.T("\n检查项\n\n", "\nchecks\n\n"))
 	writeResults(cx.stdout, report, false)
 	writeSummary(cx.stdout, report)
 
@@ -204,7 +205,7 @@ func writeResults(w io.Writer, r diag.Report, withRemedy bool) {
 		// killed by a timeout produces no output at all, so without this the
 		// operator reads "查询失败: " with nothing after the colon.
 		if extra := res.ExtraErr(); withRemedy && extra != "" {
-			fmt.Fprintf(w, "  %-8s %-16s 因: %s\n", "", "", extra)
+			fmt.Fprintf(w, i18n.T("  %-8s %-16s 因: %s\n", "  %-8s %-16s cause: %s\n"), "", "", extra)
 		}
 	}
 }
@@ -221,7 +222,7 @@ func writeSummary(w io.Writer, r diag.Report) {
 			parts = append(parts, fmt.Sprintf("%d %s", c[l], l))
 		}
 	}
-	fmt.Fprintf(w, "\n  %s，用时 %s\n", strings.Join(parts, " · "), r.Took.Round(time.Millisecond))
+	fmt.Fprintf(w, i18n.T("\n  %s，用时 %s\n", "\n  %s, took %s\n"), strings.Join(parts, " · "), r.Took.Round(time.Millisecond))
 }
 
 // wrapRemedy breaks a remedy onto lines that fit beside the indent.

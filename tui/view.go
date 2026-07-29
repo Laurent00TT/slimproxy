@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Laurent00TT/slimproxy/diag"
+	"github.com/Laurent00TT/slimproxy/i18n"
 	"github.com/Laurent00TT/slimproxy/metrics"
 	"github.com/Laurent00TT/slimproxy/tunnel"
 )
@@ -48,8 +49,9 @@ func (m Model) View() string {
 	}
 	if m.width < minWidth || m.height < minHeight {
 		return sDimO.Render(fmt.Sprintf(
-			"终端窗口过小（%d×%d），slimproxy 面板需要至少 %d×%d。\n"+
-				"放大窗口，或按 q 退出后使用 slimproxy status / doctor。",
+			i18n.T(
+				"终端窗口过小（%d×%d），slimproxy 面板需要至少 %d×%d。\n放大窗口，或按 q 退出后使用 slimproxy status / doctor。",
+				"Terminal too small (%dx%d); the slimproxy panel needs at least %dx%d.\nEnlarge the window, or press q and use slimproxy status / doctor."),
 			m.width, m.height, minWidth, minHeight))
 	}
 
@@ -207,8 +209,8 @@ func (m Model) headerRow(inner int) string {
 	// Built as label/value pairs so the whole line can be truncated from the
 	// right without splitting a pair.
 	segs := []segment{
-		{sLabel, "监听 "}, {sText, listen},
-		{sText, "  "}, {sLabel, "运行 "}, {sNum, uptime},
+		{sLabel, i18n.T("监听 ", "listen ")}, {sText, listen},
+		{sText, "  "}, {sLabel, i18n.T("运行 ", "up ")}, {sNum, uptime},
 		{sText, "  "}, {sLabel, "rpm "}, {sNum, fmt.Sprint(m.stats.RPM)},
 		{sText, "  "}, {sLabel, "ttft "}, {sNum, ttft},
 	}
@@ -220,13 +222,13 @@ func (m Model) headerRow(inner int) string {
 	if m.stats.QuotaKnown {
 		q := m.stats.Quota5h
 		segs = append(segs,
-			segment{sText, "  "}, segment{sLabel, "配额 "},
+			segment{sText, "  "}, segment{sLabel, i18n.T("配额 ", "quota ")},
 			segment{quotaStyle(q), pctText(q) + trendMark(m.stats.QuotaTrend)})
 	}
 	if m.stats.CacheKnown {
 		r := m.stats.CacheRatio
 		segs = append(segs,
-			segment{sText, "  "}, segment{sLabel, "缓存 "},
+			segment{sText, "  "}, segment{sLabel, i18n.T("缓存 ", "cache ")},
 			segment{cacheStyle(r), pctText(r)})
 	}
 	return row(inner, renderSegs(segs, inner))
@@ -282,10 +284,10 @@ func trendMark(trend int) string {
 // ---------- status rows ----------
 
 func (m Model) tunnelRow(inner int) string {
-	label := segment{sLabel, pad("隧道", 6)}
+	label := segment{sLabel, pad(i18n.T("隧道", "tunnel"), 6+hdrPad())}
 
 	if !m.tunnel.known {
-		return row(inner, renderSegs([]segment{label, {sLabel, "查询中…"}}, inner))
+		return row(inner, renderSegs([]segment{label, {sLabel, i18n.T("查询中…", "querying…")}}, inner))
 	}
 	st := m.tunnel.st
 
@@ -333,45 +335,45 @@ func tunnelSymbol(v tunnelView) (string, lipgloss.Style, string) {
 		case v.connKnown && v.conns == 0:
 			// A process that is up with no edge connection is the state that
 			// looks healthy in a task list while the public hostname 502s.
-			return symBad, sBad, "运行中但 0 连接"
+			return symBad, sBad, i18n.T("运行中但 0 连接", "running but 0 connections")
 		case v.connKnown && st.EdgeFakeIP != "":
-			return symBad, sBad, fmt.Sprintf("%d 连接 · 边缘走 fake-ip", v.conns)
+			return symBad, sBad, fmt.Sprintf(i18n.T("%d 连接 · 边缘走 fake-ip", "%d connections · edge via fake-ip"), v.conns)
 		case v.connKnown:
 			owner := ""
 			if !st.Managed {
-				owner = " · 非本进程启动"
+				owner = i18n.T(" · 非本进程启动", " · not started by this process")
 			}
-			return symOK, sOK, fmt.Sprintf("%d 连接%s", v.conns, owner)
+			return symOK, sOK, fmt.Sprintf(i18n.T("%d 连接%s", "%d connections%s"), v.conns, owner)
 		case st.ConnectionsErr != nil:
 			// The process is running but whether it is serving anyone could not
 			// be established. Not green: an unreachable Cloudflare and a tunnel
 			// with zero connections look identical from here, and one of those
 			// means the public hostname is returning 502.
-			return symNA, sLabel, "运行中 · 连接数查询失败"
+			return symNA, sLabel, i18n.T("运行中 · 连接数查询失败", "running · connection count query failed")
 		default:
 			// Unknown, not healthy. doctorRow already renders diag.Unknown as a
 			// warning; showing the same uncertainty as a green dot one row
 			// above would make the panel disagree with itself.
 			owner := ""
 			if !st.Managed {
-				owner = " · 非本进程启动"
+				owner = i18n.T(" · 非本进程启动", " · not started by this process")
 			}
-			return symNA, sLabel, "运行中 · 连接数未确认" + owner
+			return symNA, sLabel, i18n.T("运行中 · 连接数未确认", "running · connection count unconfirmed") + owner
 		}
 	case tunnel.Configured:
-		return symNA, sLabel, "已配置，未运行"
+		return symNA, sLabel, i18n.T("已配置，未运行", "configured, not running")
 	case tunnel.NotConfigured:
-		return symNA, sLabel, "未配置"
+		return symNA, sLabel, i18n.T("未配置", "not configured")
 	default:
-		return symBad, sBad, "状态未确认"
+		return symBad, sBad, i18n.T("状态未确认", "state unconfirmed")
 	}
 }
 
 func (m Model) credsRow(inner int) string {
-	label := segment{sLabel, pad("凭据", 6)}
+	label := segment{sLabel, pad(i18n.T("凭据", "creds"), 6+hdrPad())}
 
 	if !m.creds.known {
-		return row(inner, renderSegs([]segment{label, {sLabel, "读取中…"}}, inner))
+		return row(inner, renderSegs([]segment{label, {sLabel, i18n.T("读取中…", "reading…")}}, inner))
 	}
 	if m.creds.err != nil {
 		return row(inner, renderSegs([]segment{
@@ -417,7 +419,7 @@ func staleness(at, now time.Time, interval time.Duration) string {
 	if age < 2*interval {
 		return ""
 	}
-	return " · " + shortDur(age) + "前"
+	return " · " + shortDur(age) + i18n.T("前", " ago")
 }
 
 // credSubject names the pool: the single account when there is one, a count
@@ -433,7 +435,7 @@ func credSubject(v credsView) string {
 		}
 		return c.Name
 	default:
-		return fmt.Sprintf("%d 个凭据", len(v.creds))
+		return fmt.Sprintf(i18n.T("%d 个凭据", "%d credentials"), len(v.creds))
 	}
 }
 
@@ -444,9 +446,9 @@ func credSymbol(v credsView, now time.Time) (string, lipgloss.Style, string) {
 	case v.recoverable == 0:
 		// The pool is empty in the only sense that matters: the proxy will
 		// accept requests and fail every one of them.
-		return symBad, sBad, "无可用凭据 · 每个请求都会失败"
+		return symBad, sBad, i18n.T("无可用凭据 · 每个请求都会失败", "no usable credential · every request will fail")
 	case v.usable == 0:
-		return symBad, sBad, fmt.Sprintf("%d 个待刷新 · 当前无可服务凭据", v.recoverable)
+		return symBad, sBad, fmt.Sprintf(i18n.T("%d 个待刷新 · 当前无可服务凭据", "%d awaiting refresh · none can serve right now"), v.recoverable)
 	case !v.soonest.IsZero():
 		// soonest is the nearest expiry among *usable* credentials, so this
 		// duration is forward-looking by construction. It was not always: when
@@ -460,16 +462,16 @@ func credSymbol(v credsView, now time.Time) (string, lipgloss.Style, string) {
 		if d < 30*time.Minute {
 			sym, style = symBad, sBad
 		}
-		detail := shortDur(d) + " 后过期"
+		detail := shortDur(d) + i18n.T(" 后过期", " until expiry")
 		if broken > 0 {
 			sym, style = symBad, sBad
-			detail += fmt.Sprintf(" · %d 个无法加载", broken)
+			detail += fmt.Sprintf(i18n.T(" · %d 个无法加载", " · %d unloadable"), broken)
 		}
 		return sym, style, detail
 	default:
-		detail := fmt.Sprintf("%d 可用 · 未记录过期时间", v.usable)
+		detail := fmt.Sprintf(i18n.T("%d 可用 · 未记录过期时间", "%d usable · no expiry recorded"), v.usable)
 		if broken > 0 {
-			return symBad, sBad, detail + fmt.Sprintf(" · %d 个无法加载", broken)
+			return symBad, sBad, detail + fmt.Sprintf(i18n.T(" · %d 个无法加载", " · %d unloadable"), broken)
 		}
 		return symOK, sOK, detail
 	}
@@ -484,14 +486,14 @@ func credSymbol(v credsView, now time.Time) (string, lipgloss.Style, string) {
 // available. The last doctor verdict is the second: real, timestamped, and it
 // says so when it has never run.
 func (m Model) doctorRow(inner int) string {
-	label := segment{sLabel, pad("诊断", 6)}
+	label := segment{sLabel, pad(i18n.T("诊断", "doctor"), 6+hdrPad())}
 
 	if m.lastDoctor == nil {
 		return row(inner, renderSegs([]segment{
 			label,
-			{sLabel, pad("未运行", subjectW)},
+			{sLabel, pad(i18n.T("未运行", "not run"), subjectW)},
 			{sLabel, symNA + " "},
-			{sLabel, "输入 /doctor 检查部署"},
+			{sLabel, i18n.T("输入 /doctor 检查部署", "type /doctor to check the deployment")},
 		}, inner))
 	}
 	d := m.lastDoctor
@@ -502,9 +504,9 @@ func (m Model) doctorRow(inner int) string {
 	case diag.Warn, diag.Unknown, diag.Fail:
 		sym, style = symBad, sBad
 	}
-	when := "刚刚"
+	when := i18n.T("刚刚", "just now")
 	if age := m.now.Sub(d.at); age >= time.Second {
-		when = shortDur(age) + "前"
+		when = shortDur(age) + i18n.T("前", " ago")
 	}
 	return row(inner, renderSegs([]segment{
 		label,
@@ -535,7 +537,7 @@ func (m Model) streamSections(inner, body int) []string {
 	}
 
 	if routeRows > 0 {
-		out = append(out, divider(inner, "活跃路由"))
+		out = append(out, divider(inner, i18n.T("活跃路由", "active routes")))
 		for _, r := range routes[:routeRows] {
 			out = append(out, m.routeRow(inner, r))
 		}
@@ -555,9 +557,9 @@ func (m Model) streamSections(inner, body int) []string {
 	// keeps "something is running" on screen when there is no line left to say
 	// it with.
 	pending := m.stats.Pending
-	label := "最近请求"
+	label := i18n.T("最近请求", "recent requests")
 	if len(pending) > 0 {
-		label = fmt.Sprintf("最近请求 · %d 进行中", len(pending))
+		label = fmt.Sprintf(i18n.T("最近请求 · %d 进行中", "recent requests · %d in flight"), len(pending))
 	}
 	out = append(out, divider(inner, label))
 	slots := body - len(out)
@@ -585,7 +587,7 @@ func (m Model) streamSections(inner, body int) []string {
 	}
 	if hidden := len(pending) - len(shown); hidden > 0 && body-len(out) > 0 {
 		out = append(out, row(inner, renderSegs([]segment{
-			{sLabel, fmt.Sprintf("  另有 %d 个进行中", hidden)},
+			{sLabel, fmt.Sprintf(i18n.T("  另有 %d 个进行中", "  %d more in flight"), hidden)},
 		}, inner)))
 	}
 
@@ -602,7 +604,7 @@ func (m Model) streamSections(inner, body int) []string {
 	// is on its way, which reads as a contradiction rather than as two facts.
 	if len(recent) == 0 && len(pending) == 0 && slots > 0 {
 		out = append(out, row(inner, renderSegs([]segment{
-			{sLabel, "还没有完成的请求"},
+			{sLabel, i18n.T("还没有完成的请求", "no completed requests yet")},
 		}, inner)))
 	}
 	for len(out) < body {
@@ -633,7 +635,7 @@ func (m Model) routeRow(inner int, r metrics.RouteAgg) string {
 
 // Column widths for the request stream.
 const (
-	colTime   = 9 // "12:41:07 "
+	colTime = 9 // "12:41:07 "
 	// Five, not four. The gap to the next column is part of this width, and a
 	// two-character Chinese cause label ("超时") is four cells wide on its own
 	// -- at four it rendered flush against the route with no space at all,
@@ -749,35 +751,60 @@ func sampleStatus(s metrics.Sample) (string, lipgloss.Style) {
 	// bare "err" for every cause there is. A week of "err" answers nothing,
 	// which is the same gap the journal's Cause field was added to close; this
 	// is the display finally catching up with it.
-	if label, ok := causeLabels[s.Cause]; ok {
-		return label.text, label.style
+	if text, style, ok := causeLabel(s.Cause); ok {
+		return text, style
 	}
 	return "err", sBad
 }
 
-// causeLabels renders a failure cause in the four columns the status field has.
+// causeLabel renders a failure cause in the columns the status field has.
 //
-// Chinese, which is what makes them fit: two characters occupy exactly the
-// width of "429 ", where "timeout" and "canceled" would not. The panel is
-// already in Chinese, so this costs no consistency -- it is the abbreviations
-// that would have been the foreign element.
-var causeLabels = map[metrics.Cause]struct {
-	text  string
-	style lipgloss.Style
-}{
-	metrics.CauseDNS:     {"DNS", sBad},
-	metrics.CauseConnect: {"断连", sBad},
-	metrics.CauseTLS:     {"TLS", sBad},
-	metrics.CauseTimeout: {"超时", sBad},
-	// Not red, and not counted as a fault by eye. The client pressed Ctrl-C;
-	// the proxy did nothing wrong, and colouring it like an outage makes a busy
-	// interactive session look like one -- the same reason the collector keeps
-	// this cause separate from CauseTimeout in the first place.
-	metrics.CauseCanceled: {"取消", sLabel},
-	// CauseUpstream carries an HTTP status, which the branch above already
-	// returned. Reaching here means it did not, so there is nothing more
-	// specific to say than that the upstream refused.
-	metrics.CauseUpstream: {"上游", sBad},
+// A function, not the package-level map it used to be: the map baked its
+// strings at init, which runs before main has selected the language, so an
+// English session would have kept Chinese labels forever.
+//
+// Both texts fit their column deliberately. Chinese two-character labels
+// occupy the width of "429 "; the English words are chosen at most four cells
+// ("tmout", "cxl") for the same reason -- colStatus is sized for the Chinese
+// labels plus a gap, and an English word that overflows it would be truncated
+// with an ellipsis, which in a status column reads as data loss.
+func causeLabel(c metrics.Cause) (string, lipgloss.Style, bool) {
+	switch c {
+	case metrics.CauseDNS:
+		return "DNS", sBad, true
+	case metrics.CauseConnect:
+		return i18n.T("断连", "conn"), sBad, true
+	case metrics.CauseTLS:
+		return "TLS", sBad, true
+	case metrics.CauseTimeout:
+		return i18n.T("超时", "tmo"), sBad, true
+	case metrics.CauseCanceled:
+		// Not red, and not counted as a fault by eye. The client pressed
+		// Ctrl-C; the proxy did nothing wrong, and colouring it like an outage
+		// makes a busy interactive session look like one -- the same reason
+		// the collector keeps this cause separate from CauseTimeout.
+		return i18n.T("取消", "cxl"), sLabel, true
+	case metrics.CauseUpstream:
+		// CauseUpstream carries an HTTP status, which the branch above already
+		// returned. Reaching here means it did not, so there is nothing more
+		// specific to say than that the upstream refused.
+		return i18n.T("上游", "upst"), sBad, true
+	}
+	return "", lipgloss.Style{}, false
+}
+
+// hdrPad widens the status-row label column for English.
+//
+// The Chinese labels (隧道/凭据/诊断) are four cells and pad to six, leaving a
+// two-cell gap. The English ones ("tunnel", "doctor") are six cells on their
+// own, so the same width would butt them straight against the value. Two extra
+// cells restore the gap; the cost is two cells of value width, paid only in
+// the language that needs them.
+func hdrPad() int {
+	if i18n.Active() == i18n.En {
+		return 2
+	}
+	return 0
 }
 
 // ttftText renders a sample's time to first token, distinguishing "not
@@ -813,7 +840,7 @@ func (m Model) resultSection(inner, body int) []string {
 	res := m.result
 	title := res.Title
 	if title == "" {
-		title = "输出"
+		title = i18n.T("输出", "output")
 	}
 
 	out := []string{divider(inner, truncate(title, inner-4))}
@@ -842,7 +869,7 @@ func (m Model) resultSection(inner, body int) []string {
 	}
 
 	if scrollable {
-		hint := fmt.Sprintf("%d–%d / %d 行   ↑↓ 滚动 · Esc 关闭", top+1, end, len(lines))
+		hint := fmt.Sprintf(i18n.T("%d–%d / %d 行   ↑↓ 滚动 · Esc 关闭", "%d–%d / %d lines   ↑↓ scroll · Esc close"), top+1, end, len(lines))
 		out = append(out, row(inner, renderSegs([]segment{{sLabel, hint}}, inner)))
 	}
 	for len(out) < body {
@@ -1025,7 +1052,7 @@ func (m Model) renderEntry(panelW, maxH int) string {
 	}
 
 	if len(hits) == 0 && listRows > 0 {
-		b.WriteString("  " + sDimO.Render("没有匹配的命令") + "\n")
+		b.WriteString("  " + sDimO.Render(i18n.T("没有匹配的命令", "no matching command")) + "\n")
 	}
 
 	// Truncated like every other line below the panel. lipgloss.Height counts
@@ -1056,8 +1083,8 @@ func (m Model) renderConfirm(panelW, maxH int) string {
 			b.WriteString(truncateStyled("  "+lipgloss.NewStyle().Foreground(colClay).Render(s), panelW) + "\n")
 		}
 	}
-	b.WriteString(truncateStyled(" "+sSel.Render(" 确认 ")+" "+
-		sPlain.Render(sanitize(name))+sDimO.Render("   y 执行 · n 取消"), panelW))
+	b.WriteString(truncateStyled(" "+sSel.Render(i18n.T(" 确认 ", " confirm "))+" "+
+		sPlain.Render(sanitize(name))+sDimO.Render(i18n.T("   y 执行 · n 取消", "   y run · n cancel")), panelW))
 	return b.String()
 }
 
@@ -1081,11 +1108,11 @@ func (m Model) renderStatusLine(panelW int) string {
 	case m.running != "":
 		return truncateStyled(" "+sAmbO.Render("⋯ ")+sPlain.Render(sanitize(m.running)), panelW)
 	default:
-		hint := "/ 命令"
+		hint := i18n.T("/ 命令", "/ commands")
 		if m.result != nil {
-			hint = "↑↓ 滚动 · Esc 关闭 · / 命令"
+			hint = i18n.T("↑↓ 滚动 · Esc 关闭 · / 命令", "↑↓ scroll · Esc close · / commands")
 		}
-		return " " + sDimO.Render(hint+"   r 刷新   q 退出")
+		return " " + sDimO.Render(hint+i18n.T("   r 刷新   q 退出", "   r refresh   q quit"))
 	}
 }
 

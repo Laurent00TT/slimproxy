@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Laurent00TT/slimproxy/i18n"
 	"github.com/Laurent00TT/slimproxy/tunnel"
 )
 
@@ -48,95 +49,95 @@ func commandSet() []*Command {
 	return []*Command{
 		{
 			Name:    "monitor",
-			Summary: "回到实时请求流（与 Esc 等效）",
+			Summary: i18n.T("回到实时请求流（与 Esc 等效）", "back to the live request stream (same as Esc)"),
 			Run:     runMonitor,
 		},
 		{
 			Name:    "tunnel status",
-			Summary: "查询隧道三态与 Cloudflare 侧连接数",
+			Summary: i18n.T("查询隧道三态与 Cloudflare 侧连接数", "query tunnel state and Cloudflare-side connections"),
 			Run:     runTunnelStatus,
 		},
 		{
 			Name:    "tunnel up",
-			Summary: "启动 cloudflared 并等待注册连接",
+			Summary: i18n.T("启动 cloudflared 并等待注册连接", "start cloudflared and wait for a registered connection"),
 			Consequence: func(m *Model) string {
 				if m.tunnel.known && m.tunnel.st.State == tunnel.Running && m.tunnel.st.Managed {
-					return "已在运行，此命令会报错而不会重复启动"
+					return i18n.T("已在运行，此命令会报错而不会重复启动", "already running; this errors rather than starting twice")
 				}
 				if m.tunnel.known && m.tunnel.hostname != "" {
-					return "成功后 " + m.tunnel.hostname + " 将对公网可达"
+					return i18n.T("成功后 ", "on success ") + m.tunnel.hostname + i18n.T(" 将对公网可达", " becomes publicly reachable")
 				}
-				return "最多等待 15 秒确认连接建立"
+				return i18n.T("最多等待 15 秒确认连接建立", "waits up to 15 seconds to confirm the connection")
 			},
 			Run: runTunnelUp,
 		},
 		{
 			Name:    "tunnel down",
-			Summary: "停止本进程启动的 cloudflared",
+			Summary: i18n.T("停止本进程启动的 cloudflared", "stop the cloudflared this process started"),
 			Danger:  true,
 			Consequence: func(m *Model) string {
 				if !m.tunnel.known {
-					return "隧道状态尚未确认"
+					return i18n.T("隧道状态尚未确认", "tunnel state not yet confirmed")
 				}
 				switch {
 				case m.tunnel.st.Managed && m.tunnel.connKnown && m.tunnel.conns > 0:
-					return fmt.Sprintf("当前 %d 连接 · 停止后 %s 立即不可达",
+					return fmt.Sprintf(i18n.T("当前 %d 连接 · 停止后 %s 立即不可达", "%d connections now · after stopping, %s becomes unreachable at once"),
 						m.tunnel.conns, hostnameOrPhrase(m.tunnel.hostname))
 				case m.tunnel.st.Managed:
-					return "停止后 " + hostnameOrPhrase(m.tunnel.hostname) + " 立即不可达"
+					return i18n.T("停止后 ", "after stopping, ") + hostnameOrPhrase(m.tunnel.hostname) + i18n.T(" 立即不可达", " becomes unreachable at once")
 				default:
-					return "没有由本进程启动的隧道，此命令不会终止任何进程"
+					return i18n.T("没有由本进程启动的隧道，此命令不会终止任何进程", "no tunnel started by this process; nothing will be terminated")
 				}
 			},
 			Run: runTunnelDown,
 		},
 		{
 			Name:    "auth list",
-			Summary: "列出凭据池及各自状态",
+			Summary: i18n.T("列出凭据池及各自状态", "list the credential pool and each one's state"),
 			Run:     runAuthList,
 		},
 		{
 			Name:    "auth rm",
-			Summary: "删除一个凭据",
-			Args:    "<名称或邮箱>",
+			Summary: i18n.T("删除一个凭据", "remove a credential"),
+			Args:    i18n.T("<名称或邮箱>", "<name or email>"),
 			Danger:  true,
 			Consequence: func(m *Model) string {
 				if !m.creds.known {
-					return "凭据池尚未读取"
+					return i18n.T("凭据池尚未读取", "credential pool not yet read")
 				}
 				switch n := m.creds.recoverable; n {
 				case 0:
 					// Was reported as "仅剩 1 个" -- a count of a credential
 					// that does not exist, because the message hardcoded the
 					// number the branch condition allowed to be zero.
-					return "池中已无可恢复凭据"
+					return i18n.T("池中已无可恢复凭据", "no recoverable credential left in the pool")
 				case 1:
-					return "池中仅剩 1 个可恢复凭据，删除后每个请求都会失败"
+					return i18n.T("池中仅剩 1 个可恢复凭据，删除后每个请求都会失败", "only 1 recoverable credential left; after removal every request fails")
 				default:
-					return fmt.Sprintf("池中共 %d 个可恢复凭据", n)
+					return fmt.Sprintf(i18n.T("池中共 %d 个可恢复凭据", "%d recoverable credentials in the pool"), n)
 				}
 			},
 			Run: runAuthRemove,
 		},
 		{
 			Name:    "auth add",
-			Summary: "添加凭据（需退出后在命令行完成）",
+			Summary: i18n.T("添加凭据（需退出后在命令行完成）", "add a credential (finished on the command line after quitting)"),
 			Args:    "<provider>",
 			Run:     runAuthAdd,
 		},
 		{
 			Name:    "doctor",
-			Summary: "运行完整诊断（可能耗时数十秒）",
+			Summary: i18n.T("运行完整诊断（可能耗时数十秒）", "run the full diagnostics (can take tens of seconds)"),
 			Run:     runDoctor,
 		},
 		{
 			Name:    "routes",
-			Summary: "列出本构建支持的翻译路由",
+			Summary: i18n.T("列出本构建支持的翻译路由", "list the translator routes this build supports"),
 			Run:     runRoutes,
 		},
 		{
 			Name:    "quit",
-			Summary: "停止代理并退出",
+			Summary: i18n.T("停止代理并退出", "stop the proxy and quit"),
 			// Not Danger, deliberately. The q key means the same thing and
 			// cannot reasonably prompt, so marking only the typed spelling
 			// dangerous would give one action two behaviours. The guard that
@@ -144,9 +145,9 @@ func commandSet() []*Command {
 			// requestQuit and covers both.
 			Consequence: func(m *Model) string {
 				if m.tunnel.known && m.tunnel.st.Managed {
-					return "隧道是后台进程，退出后仍会继续运行（用 tunnel down 停止）"
+					return i18n.T("隧道是后台进程，退出后仍会继续运行（用 tunnel down 停止）", "the tunnel is a background process and keeps running after quit (stop it with tunnel down)")
 				}
-				return "本地监听立即停止"
+				return i18n.T("本地监听立即停止", "the local listener stops at once")
 			},
 			Run: runQuit,
 		},
@@ -160,7 +161,7 @@ func commandSet() []*Command {
 // this package that does return one would be a genuine trap.
 func hostnameOrPhrase(s string) string {
 	if strings.TrimSpace(s) == "" {
-		return "隧道主机名"
+		return i18n.T("隧道主机名", "the tunnel hostname")
 	}
 	return s
 }

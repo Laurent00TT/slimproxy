@@ -13,7 +13,7 @@ import (
 	"github.com/Laurent00TT/slimproxy/tunnel"
 )
 
-func key(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
+func key(s string) tea.KeyMsg          { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
 func special(t tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: t} }
 
 // press feeds one key and returns the resulting model, so a test reads as a

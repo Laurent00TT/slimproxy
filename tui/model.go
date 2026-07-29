@@ -10,6 +10,7 @@ import (
 
 	"github.com/Laurent00TT/slimproxy/credentials"
 	"github.com/Laurent00TT/slimproxy/diag"
+	"github.com/Laurent00TT/slimproxy/i18n"
 	"github.com/Laurent00TT/slimproxy/metrics"
 	"github.com/Laurent00TT/slimproxy/tunnel"
 )
@@ -152,7 +153,7 @@ func New(ctx context.Context, deps Deps) Model {
 	// operator looking on a stdout this panel is occupying. Announcing it is
 	// the difference between redirected logs and lost ones.
 	if deps.LogDir != "" {
-		m.setNote("日志已重定向到 "+deps.LogDir, false)
+		m.setNote(i18n.T("日志已重定向到 ", "logs redirected to ")+deps.LogDir, false)
 	}
 	return m
 }
@@ -328,7 +329,7 @@ func (m *Model) expireNote() {
 func (m Model) requestQuit() (tea.Model, tea.Cmd) {
 	if m.running != "" && !m.quitArmed {
 		m.quitArmed = true
-		m.setNote("「"+m.running+"」仍在执行；再按一次 q 会中止它并退出", true)
+		m.setNote(i18n.T("「", "\u201c")+m.running+i18n.T("」仍在执行；再按一次 q 会中止它并退出", "\u201d is still running; press q again to abort it and quit"), true)
 		return m, nil
 	}
 	if m.running != "" && m.deps.OnAbort != nil {
@@ -415,7 +416,7 @@ func (m Model) handleNormalKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.tunnel.inFlight = true
 			cmds = append(cmds, m.fetchTunnel(false))
 		}
-		m.setNote("正在刷新…", false)
+		m.setNote(i18n.T("正在刷新…", "refreshing…"), false)
 		return m, tea.Batch(cmds...)
 	}
 	return m, nil
@@ -488,7 +489,7 @@ func (m Model) handleConfirmKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.execute(c, args)
 	case "n", "N", "esc", "enter":
 		m.entry = entryState{}
-		m.setNote("已取消", false)
+		m.setNote(i18n.T("已取消", "canceled"), false)
 		return m, nil
 	}
 	// Anything else is ignored on purpose. A confirmation that accepts any
@@ -519,12 +520,12 @@ func (m Model) selected() *Command {
 func (m Model) submit() (tea.Model, tea.Cmd) {
 	c := m.selected()
 	if c == nil {
-		m.setNote("没有匹配的命令", true)
+		m.setNote(i18n.T("没有匹配的命令", "no matching command"), true)
 		return m, nil
 	}
 	args := m.entry.args
 	if m.running != "" {
-		m.setNote("正在执行「"+m.running+"」，请等它结束", true)
+		m.setNote(i18n.T("正在执行「", "\u201c")+m.running+i18n.T("」，请等它结束", "\u201d is running; wait for it to finish"), true)
 		return m, nil
 	}
 
@@ -623,9 +624,9 @@ func (m Model) execute(c *Command, args []string) (tea.Model, tea.Cmd) {
 // already called its output.
 func timeoutTitle(cmd, existing string) string {
 	if existing == "" {
-		return cmd + " 超时"
+		return cmd + i18n.T(" 超时", " timed out")
 	}
-	return existing + "（超时）"
+	return existing + i18n.T("（超时）", " (timed out)")
 }
 
 // timeoutLine says what timed out and for how long, in the interface's own
@@ -634,7 +635,7 @@ func timeoutTitle(cmd, existing string) string {
 // Without it the status line showed a bare `context deadline exceeded`: English
 // in an otherwise Chinese panel, and silent about which command produced it.
 func timeoutLine(cmd string, d time.Duration) string {
-	return fmt.Sprintf("「%s」在 %s 内未完成，以下结果可能不完整。", cmd, shortDur(d))
+	return fmt.Sprintf(i18n.T("「%s」在 %s 内未完成，以下结果可能不完整。", "\u201c%s\u201d did not finish within %s; the results below may be incomplete."), cmd, shortDur(d))
 }
 
 // ---------- scrolling ----------

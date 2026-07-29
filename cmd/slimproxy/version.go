@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"github.com/Laurent00TT/slimproxy/i18n"
 	"github.com/Laurent00TT/slimproxy/proxy"
 )
 
@@ -31,8 +32,9 @@ func cmdVersion(cx *cliContext, args []string) error {
 		// Worth stating plainly: the emulation layer came from a working copy
 		// on this machine rather than a published version, so two builds of
 		// "the same" slimproxy can behave differently.
-		fmt.Fprintf(cx.stdout, "\n注意：上游是本地 checkout（go.mod 的 replace 指令），不是已发布版本。\n"+
-			"      构建结果取决于这台机器上那个目录的内容。\n")
+		fmt.Fprint(cx.stdout, i18n.T(
+			"\n注意：上游是本地 checkout（go.mod 的 replace 指令），不是已发布版本。\n      构建结果取决于这台机器上那个目录的内容。\n",
+			"\nnote: the upstream is a local checkout (a go.mod replace directive), not a released version.\n      The build depends on whatever that directory holds on this machine.\n"))
 	}
 	return nil
 }
@@ -42,7 +44,7 @@ func cmdVersion(cx *cliContext, args []string) error {
 func upstreamBuild() (version string, replaced bool) {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
-		return "未知（构建信息不可用）", false
+		return i18n.T("未知（构建信息不可用）", "unknown (build info unavailable)"), false
 	}
 	for _, d := range info.Deps {
 		if !strings.Contains(d.Path, "CLIProxyAPI") {
@@ -57,5 +59,5 @@ func upstreamBuild() (version string, replaced bool) {
 		}
 		return d.Version, false
 	}
-	return "未链接", false
+	return i18n.T("未链接", "not linked"), false
 }

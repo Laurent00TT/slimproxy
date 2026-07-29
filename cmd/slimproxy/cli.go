@@ -9,6 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/Laurent00TT/slimproxy/i18n"
 	"github.com/Laurent00TT/slimproxy/proxy"
 )
 
@@ -25,11 +26,19 @@ type cliContext struct {
 
 // command is one entry in the CLI.
 type command struct {
-	name    string
-	summary string // one line, shown in `slimproxy help`
-	usage   string // shown by `slimproxy <name> -h`
-	run     func(cx *cliContext, args []string) error
+	name string
+	// summaryZh and summaryEn hold both translations, rendered by summary().
+	// Not a single field holding i18n.T's result: this registry is populated in
+	// init, which runs before main has selected the language, so a summary
+	// baked here would be stuck in the default language for the process's life.
+	summaryZh string
+	summaryEn string
+	usage     string // shown by `slimproxy <name> -h`
+	run       func(cx *cliContext, args []string) error
 }
+
+// summary is the one line shown in `slimproxy help`.
+func (c *command) summary() string { return i18n.T(c.summaryZh, c.summaryEn) }
 
 // commands is the registry. Order here is the order help prints.
 //
@@ -41,80 +50,92 @@ var commands []*command
 func init() {
 	commands = []*command{
 		{
-			name:    "serve",
-			summary: "启动代理；在终端里同时打开全屏面板（无参数运行时的默认行为）",
-			usage:   "slimproxy serve [-config FILE] [-state DIR] [-port N] [-no-tui]",
-			run:     cmdServe,
+			name:      "serve",
+			summaryZh: "启动代理；在终端里同时打开全屏面板（无参数运行时的默认行为)",
+			summaryEn: "start the proxy; opens the full-screen panel in a terminal (the default with no arguments)",
+			usage:     "slimproxy serve [-config FILE] [-state DIR] [-port N] [-no-tui]",
+			run:       cmdServe,
 		},
 		{
 			// The three inspection commands name each other on purpose. They
 			// look interchangeable from the outside -- and status/doctor really
 			// do share one check set -- so each summary says what it does that
 			// the other two do not.
-			name:    "check",
-			summary: "只读配置：校验并打印将要运行的内容（不联网，秒回）",
-			usage:   "slimproxy check [-config FILE] [-state DIR] [-port N]",
-			run:     cmdCheck,
+			name:      "check",
+			summaryZh: "只读配置：校验并打印将要运行的内容（不联网，秒回）",
+			summaryEn: "read-only: validate the config and print what would run (no network, instant)",
+			usage:     "slimproxy check [-config FILE] [-state DIR] [-port N]",
+			run:       cmdCheck,
 		},
 		{
-			name:    "init",
-			summary: "生成一份可直接运行的配置（含随机 api-key）",
-			usage:   "slimproxy init [-config FILE] [-init-auth-dir DIR] [-force]",
-			run:     cmdInit,
+			name:      "init",
+			summaryZh: "生成一份可直接运行的配置（含随机 api-key）",
+			summaryEn: "write a ready-to-run config (with a generated api-key)",
+			usage:     "slimproxy init [-config FILE] [-init-auth-dir DIR] [-force]",
+			run:       cmdInit,
 		},
 		{
-			name:    "status",
-			summary: "与 doctor 同一套检查：只报告不建议，恒退出 0（适合脚本轮询）",
-			usage:   "slimproxy status [-config FILE] [-state DIR] [-port N]",
-			run:     cmdStatus,
+			name:      "status",
+			summaryZh: "与 doctor 同一套检查：只报告不建议，恒退出 0（适合脚本轮询）",
+			summaryEn: "the doctor checks, report-only: no remedies, always exit 0 (for script polling)",
+			usage:     "slimproxy status [-config FILE] [-state DIR] [-port N]",
+			run:       cmdStatus,
 		},
 		{
-			name:    "doctor",
-			summary: "与 status 同一套检查：附修复建议，有问题时退出非 0（适合排查）",
-			usage:   "slimproxy doctor [-config FILE] [-state DIR] [-port N]",
-			run:     cmdDoctor,
+			name:      "doctor",
+			summaryZh: "与 status 同一套检查：附修复建议，有问题时退出非 0（适合排查）",
+			summaryEn: "the status checks with remedies, non-zero exit on problems (for troubleshooting)",
+			usage:     "slimproxy doctor [-config FILE] [-state DIR] [-port N]",
+			run:       cmdDoctor,
 		},
 		{
-			name:    "auth",
-			summary: "管理上游凭据（list / add / rm）",
-			usage:   "slimproxy auth <list|add|rm> [参数]",
-			run:     cmdAuth,
+			name:      "auth",
+			summaryZh: "管理上游凭据（list / add / rm）",
+			summaryEn: "manage upstream credentials (list / add / rm)",
+			usage:     "slimproxy auth <list|add|rm> [参数]",
+			run:       cmdAuth,
 		},
 		{
-			name:    "tunnel",
-			summary: "管理对外隧道（status / up / down）",
-			usage:   "slimproxy tunnel <status|up|down> [-state DIR] [-detach]",
-			run:     cmdTunnel,
+			name:      "tunnel",
+			summaryZh: "管理对外隧道（status / up / down）",
+			summaryEn: "manage the public tunnel (status / up / down)",
+			usage:     "slimproxy tunnel <status|up|down> [-state DIR] [-detach]",
+			run:       cmdTunnel,
 		},
 		{
-			name:    "routes",
-			summary: "列出哪些客户端协议能翻译到哪些上游协议",
-			usage:   "slimproxy routes",
-			run:     cmdRoutes,
+			name:      "routes",
+			summaryZh: "列出哪些客户端协议能翻译到哪些上游协议",
+			summaryEn: "list which client protocols translate to which upstreams",
+			usage:     "slimproxy routes",
+			run:       cmdRoutes,
 		},
 		{
-			name:    "log",
-			summary: "查询事件日志：请求、失败、以及当时的隧道/凭据状态",
-			usage:   "slimproxy log [-since 1h] [-failed] [-status N] [-slow 10s] [-route X] [-n 50]",
-			run:     cmdLog,
+			name:      "log",
+			summaryZh: "查询事件日志：请求、失败、以及当时的隧道/凭据状态",
+			summaryEn: "query the event journal: requests, failures, and the tunnel/credential state at the time",
+			usage:     "slimproxy log [-since 1h] [-failed] [-status N] [-slow 10s] [-route X] [-n 50]",
+			run:       cmdLog,
 		},
 		{
-			name:    "test",
-			summary: "发一个真实请求走通整条链路（会消耗上游配额）",
-			usage:   "slimproxy test [-config FILE] [-model NAME] [-prompt TEXT] [-timeout N]",
-			run:     cmdTest,
+			name:      "test",
+			summaryZh: "发一个真实请求走通整条链路（会消耗上游配额）",
+			summaryEn: "send one real request through the whole chain (consumes upstream quota)",
+			usage:     "slimproxy test [-config FILE] [-model NAME] [-prompt TEXT] [-timeout N]",
+			run:       cmdTest,
 		},
 		{
-			name:    "version",
-			summary: "打印版本与构建信息",
-			usage:   "slimproxy version",
-			run:     cmdVersion,
+			name:      "version",
+			summaryZh: "打印版本与构建信息",
+			summaryEn: "print version and build information",
+			usage:     "slimproxy version",
+			run:       cmdVersion,
 		},
 		{
-			name:    "help",
-			summary: "显示命令列表，或某个命令的用法",
-			usage:   "slimproxy help [COMMAND]",
-			run:     cmdHelp,
+			name:      "help",
+			summaryZh: "显示命令列表，或某个命令的用法",
+			summaryEn: "show the command list, or one command\u2019s usage",
+			usage:     "slimproxy help [COMMAND]",
+			run:       cmdHelp,
 		},
 	}
 }
@@ -151,7 +172,7 @@ func dispatch(cx *cliContext, args []string) error {
 	if !strings.HasPrefix(first, "-") {
 		cmd := lookup(first)
 		if cmd == nil {
-			return fmt.Errorf("%w: 未知命令 %q\n\n%s", errUsage, first, commandList())
+			return fmt.Errorf(i18n.T("%w: 未知命令 %q\n\n%s", "%w: unknown command %q\n\n%s"), errUsage, first, commandList())
 		}
 		return cmd.run(cx, args[1:])
 	}
@@ -192,10 +213,10 @@ func dispatchLegacy(cx *cliContext, args []string) error {
 	// command the user meant as a dry run.
 	if fs.NArg() > 0 {
 		if lookup(fs.Arg(0)) != nil {
-			return fmt.Errorf("%w: 子命令 %q 必须写在选项前面，例如: slimproxy %s -config ...",
+			return fmt.Errorf(i18n.T("%w: 子命令 %q 必须写在选项前面，例如: slimproxy %s -config ...", "%w: subcommand %q must come before options, e.g.: slimproxy %s -config ..."),
 				errUsage, fs.Arg(0), fs.Arg(0))
 		}
-		return fmt.Errorf("%w: 无法识别的参数 %q\n\n%s", errUsage, fs.Arg(0), commandList())
+		return fmt.Errorf(i18n.T("%w: 无法识别的参数 %q\n\n%s", "%w: unrecognised argument %q\n\n%s"), errUsage, fs.Arg(0), commandList())
 	}
 
 	// Two selectors are a contradiction, not a precedence question. Picking the
@@ -212,14 +233,14 @@ func dispatchLegacy(cx *cliContext, args []string) error {
 		selected = append(selected, "-check")
 	}
 	if len(selected) > 1 {
-		return fmt.Errorf("%w: %s 不能同时使用，请一次只选一个", errUsage, strings.Join(selected, " 与 "))
+		return fmt.Errorf(i18n.T("%w: %s 不能同时使用，请一次只选一个", "%w: %s cannot be combined; pick one at a time"), errUsage, strings.Join(selected, i18n.T(" 与 ", " and ")))
 	}
 
 	// An option the chosen command cannot use was almost certainly a mistake.
 	// The old interface accepted and ignored these; saying so costs nothing and
 	// is the difference between "my flag did nothing" and "my flag was wrong".
 	if unused := unusedLegacyOptions(fs, *doInit); len(unused) > 0 {
-		fmt.Fprintf(cx.stderr, "slimproxy: 忽略了与本次操作无关的选项: %s\n", strings.Join(unused, " "))
+		fmt.Fprintf(cx.stderr, i18n.T("slimproxy: 忽略了与本次操作无关的选项: %s\n", "slimproxy: ignored options irrelevant to this operation: %s\n"), strings.Join(unused, " "))
 	}
 
 	// Options travel as arguments, not through the context: a command must
@@ -360,7 +381,7 @@ func (cx *cliContext) parsePositional(fs *flag.FlagSet, cmd *command, args []str
 		// flag package stop parsing, so everything after it -- including valid
 		// options -- lands here too, and "收到 4 个" for one stray word reads
 		// like a different mistake than the one that was made.
-		return nil, fmt.Errorf("%w: %s 最多接受 %d 个参数；无法识别: %s\n\n用法: %s",
+		return nil, fmt.Errorf(i18n.T("%w: %s 最多接受 %d 个参数；无法识别: %s\n\n用法: %s", "%w: %s takes at most %d arguments; unrecognised: %s\n\nusage: %s"),
 			errUsage, cmd.name, max,
 			strings.Join(positional[max:], " "), cmd.usage)
 	}
@@ -374,7 +395,7 @@ func (cx *cliContext) parse(fs *flag.FlagSet, cmd *command, args []string) error
 		return err
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("%w: %s 不接受参数 %q\n\n用法: %s",
+		return fmt.Errorf(i18n.T("%w: %s 不接受参数 %q\n\n用法: %s", "%w: %s takes no argument %q\n\nusage: %s"),
 			errUsage, cmd.name, fs.Arg(0), cmd.usage)
 	}
 	return nil
@@ -385,7 +406,7 @@ func (cx *cliContext) parse(fs *flag.FlagSet, cmd *command, args []string) error
 func (cx *cliContext) parseFlags(fs *flag.FlagSet, cmd *command, args []string) error {
 	err := fs.Parse(args)
 	if errors.Is(err, flag.ErrHelp) {
-		fmt.Fprintf(cx.stdout, "用法: %s\n\n%s\n\n选项:\n", cmd.usage, cmd.summary)
+		fmt.Fprintf(cx.stdout, i18n.T("用法: %s\n\n%s\n\n选项:\n", "usage: %s\n\n%s\n\noptions:\n"), cmd.usage, cmd.summary())
 		fs.SetOutput(cx.stdout)
 		fs.PrintDefaults()
 		return errHandled
@@ -416,17 +437,17 @@ func (cx *cliContext) loadConfigFor() (*proxy.Config, error) {
 
 func commandList() string {
 	var b strings.Builder
-	b.WriteString("slimproxy — 在 CLIProxyAPI 之上的小型代理\n\n用法:\n  slimproxy [命令] [选项]\n\n命令:\n")
+	b.WriteString(i18n.T("slimproxy — 在 CLIProxyAPI 之上的小型代理\n\n用法:\n  slimproxy [命令] [选项]\n\n命令:\n", "slimproxy — a small proxy on top of CLIProxyAPI\n\nusage:\n  slimproxy [command] [options]\n\ncommands:\n"))
 	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 	// Registry order, not alphabetical: serve first because it is the default,
 	// help last because it is the fallback.
 	for _, c := range commands {
-		fmt.Fprintf(tw, "  %s\t%s\n", c.name, c.summary)
+		fmt.Fprintf(tw, "  %s\t%s\n", c.name, c.summary())
 	}
 	_ = tw.Flush()
-	b.WriteString("\n不带命令运行等同于 serve。\n")
-	b.WriteString("旧式写法（-check / -init / -routes）仍然可用。\n")
-	b.WriteString("\n用 \"slimproxy help COMMAND\" 查看某个命令的用法。\n")
+	b.WriteString(i18n.T("\n不带命令运行等同于 serve。\n", "\nrunning with no command is the same as serve.\n"))
+	b.WriteString(i18n.T("旧式写法（-check / -init / -routes）仍然可用。\n", "the legacy spellings (-check / -init / -routes) still work.\n"))
+	b.WriteString(i18n.T("\n用 \"slimproxy help COMMAND\" 查看某个命令的用法。\n", "\nuse \"slimproxy help COMMAND\" for one command\u2019s usage.\n"))
 	return b.String()
 }
 
@@ -437,7 +458,7 @@ func cmdHelp(cx *cliContext, args []string) error {
 	}
 	cmd := lookup(args[0])
 	if cmd == nil {
-		return fmt.Errorf("%w: 未知命令 %q\n\n%s", errUsage, args[0], commandList())
+		return fmt.Errorf(i18n.T("%w: 未知命令 %q\n\n%s", "%w: unknown command %q\n\n%s"), errUsage, args[0], commandList())
 	}
 
 	// Delegated rather than summarised again.
@@ -451,7 +472,7 @@ func cmdHelp(cx *cliContext, args []string) error {
 		return skipHandled(cmd.run(cx, []string{"-h"}))
 	}
 
-	fmt.Fprintf(cx.stdout, "用法: %s\n\n%s\n", cmd.usage, cmd.summary)
+	fmt.Fprintf(cx.stdout, i18n.T("用法: %s\n\n%s\n", "usage: %s\n\n%s\n"), cmd.usage, cmd.summary())
 	return nil
 }
 

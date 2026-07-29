@@ -12,6 +12,7 @@ import (
 
 	"github.com/Laurent00TT/slimproxy/credentials"
 	"github.com/Laurent00TT/slimproxy/diag"
+	"github.com/Laurent00TT/slimproxy/i18n"
 	"github.com/Laurent00TT/slimproxy/journal"
 	"github.com/Laurent00TT/slimproxy/proxy"
 	"github.com/Laurent00TT/slimproxy/translate"
@@ -86,7 +87,7 @@ func runDashboard(cx *cliContext, cfg *proxy.Config) error {
 
 	if aborted != "" {
 		fmt.Fprintf(cx.stderr,
-			"slimproxy: 退出时「%s」仍在执行，已被中止，结果未知\n", aborted)
+			i18n.T("slimproxy: 退出时「%s」仍在执行，已被中止，结果未知\n", "slimproxy: %q was still running at quit; it was aborted and its outcome is unknown\n"), aborted)
 	}
 	return err
 }
@@ -132,7 +133,7 @@ func supervise(
 		// Reported rather than ignored: the process is about to exit with the
 		// listener possibly still bound, and the next start would fail with a
 		// port conflict that has no other explanation.
-		fmt.Fprintf(warn, "slimproxy: 代理在 %s 内未停止，进程仍将退出\n", grace)
+		fmt.Fprintf(warn, i18n.T("slimproxy: 代理在 %s 内未停止，进程仍将退出\n", "slimproxy: the proxy did not stop within %s; the process exits anyway\n"), grace)
 	}
 	return uiErr
 }
@@ -150,7 +151,7 @@ func dashboardDeps(cx *cliContext, cfg *proxy.Config, rt *proxy.Runtime) (tui.De
 		// Not fatal: the proxy resolved the same path and started. But the
 		// dashboard would be reading a different directory than the one being
 		// served, and every credential row would be about the wrong place.
-		return tui.Deps{}, fmt.Errorf("无法解析凭据目录: %w", authErr)
+		return tui.Deps{}, fmt.Errorf(i18n.T("无法解析凭据目录: %w", "cannot resolve the credential directory: %w"), authErr)
 	}
 
 	mgr := &tunnel.Manager{StateDir: cx.stateDir}
@@ -166,7 +167,7 @@ func dashboardDeps(cx *cliContext, cfg *proxy.Config, rt *proxy.Runtime) (tui.De
 			// The file became unreadable since startup. Diagnose what is
 			// running instead of refusing: the in-memory config is the one
 			// actually serving requests.
-			liveCfg, typeErrs = cfg, []string{"配置文件当前无法读取: " + err.Error()}
+			liveCfg, typeErrs = cfg, []string{i18n.T("配置文件当前无法读取: ", "the config file is currently unreadable: ") + err.Error()}
 		}
 		target := targetFor(liveCfg, cx.configPath, typeErrs)
 		// Only reachable from inside the process that served the requests --
@@ -284,14 +285,14 @@ func tunnelState(st tunnel.Status, err error) string {
 // tunnelNote condenses a tunnel transition into one line for the journal.
 func tunnelNote(st tunnel.Status, err error) string {
 	if err != nil {
-		return "失败: " + err.Error()
+		return i18n.T("失败: ", "failed: ") + err.Error()
 	}
 	parts := []string{st.State.String()}
 	if len(st.Hostnames) > 0 {
 		parts = append(parts, tunnel.JoinHostnames(st.Hostnames))
 	}
 	if st.ConnectionsKnown {
-		parts = append(parts, fmt.Sprintf("%d 连接", st.Connections))
+		parts = append(parts, fmt.Sprintf(i18n.T("%d 连接", "%d connections"), st.Connections))
 	}
 	return strings.Join(parts, " · ")
 }

@@ -146,7 +146,7 @@ func TestUnknownCommandIsUsageError(t *testing.T) {
 	// Assert on a summary rather than a command name: names also appear in
 	// commandList's static prose ("旧式写法（-check / -init / -routes）"), so
 	// asserting on a name passes even if the registry loop is deleted entirely.
-	if !strings.Contains(err.Error(), lookup("routes").summary) {
+	if !strings.Contains(err.Error(), lookup("routes").summary()) {
 		t.Errorf("error does not list available commands: %v", err)
 	}
 }
@@ -158,7 +158,7 @@ func TestHelpListsEveryRegisteredCommand(t *testing.T) {
 	}
 	for _, c := range commands {
 		// Summary, not name -- see TestUnknownCommandIsUsageError.
-		if !strings.Contains(out.String(), c.summary) {
+		if !strings.Contains(out.String(), c.summary()) {
 			t.Errorf("help omits command %q", c.name)
 		}
 	}

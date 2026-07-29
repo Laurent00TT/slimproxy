@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/Laurent00TT/slimproxy/tunnel"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // fakeIPNet is RFC 2544 benchmark space, 198.18.0.0/15.
@@ -132,34 +134,34 @@ func (t Target) checkJournal(context.Context) Result {
 	if !t.FromRunningInstance {
 		return Result{
 			Level:  Unknown,
-			Detail: "只有运行中的实例知道事件日志的写入情况",
-			Remedy: "在面板里运行 /doctor",
+			Detail: i18n.T("只有运行中的实例知道事件日志的写入情况", "only a running instance knows whether the journal is being written"),
+			Remedy: i18n.T("在面板里运行 /doctor", "run /doctor from the dashboard"),
 		}
 	}
 	if t.JournalDir == "" {
 		return Result{
 			Level:  Warn,
-			Detail: "事件日志未启用，无法回溯历史请求",
-			Remedy: "把 journal-days 设为正数（或删掉该项用默认值 7）重新启动",
+			Detail: i18n.T("事件日志未启用，无法回溯历史请求", "the event journal is disabled; past requests cannot be reviewed"),
+			Remedy: i18n.T("把 journal-days 设为正数（或删掉该项用默认值 7）重新启动", "set journal-days to a positive number (or delete it for the default 7) and restart"),
 		}
 	}
 	if t.JournalErr != nil {
 		return Result{
 			Level:  Fail,
-			Detail: fmt.Sprintf("事件日志写入失败: %v", t.JournalErr),
-			Remedy: "检查 " + t.JournalDir + " 的权限与磁盘空间",
+			Detail: fmt.Sprintf(i18n.T("事件日志写入失败: %v", "journal writes are failing: %v"), t.JournalErr),
+			Remedy: i18n.T("检查 ", "check permissions and disk space on ") + t.JournalDir + i18n.T(" 的权限与磁盘空间", ""),
 			Err:    t.JournalErr,
 		}
 	}
 	if t.JournalDropped > 0 {
 		return Result{
 			Level: Warn,
-			Detail: fmt.Sprintf("有 %d 条事件因写入队列已满被丢弃（磁盘跟不上请求速率）",
+			Detail: fmt.Sprintf(i18n.T("有 %d 条事件因写入队列已满被丢弃（磁盘跟不上请求速率）", "%d events were dropped because the write queue filled (disk cannot keep up with the request rate)"),
 				t.JournalDropped),
-			Remedy: "这段时间的回溯记录不完整；若持续出现，检查磁盘性能",
+			Remedy: i18n.T("这段时间的回溯记录不完整；若持续出现，检查磁盘性能", "the review record for this period is incomplete; if it persists, check disk performance"),
 		}
 	}
-	return Result{Level: Pass, Detail: "事件日志写入正常: " + t.JournalDir}
+	return Result{Level: Pass, Detail: i18n.T("事件日志写入正常: ", "journal writes are healthy: ") + t.JournalDir}
 }
 
 // checkTranslator reports protocol pairs that were forwarded without
@@ -177,19 +179,20 @@ func (t Target) checkTranslator(context.Context) Result {
 		// saying so.
 		return Result{
 			Level:  Unknown,
-			Detail: "只有运行中的实例能观察到未翻译的协议组合，本次从外部检查无法判断",
-			Remedy: "在面板里运行 /doctor，或查看日志中是否有「没有为 X → Y 注册翻译器」",
+			Detail: i18n.T("只有运行中的实例能观察到未翻译的协议组合，本次从外部检查无法判断", "only a running instance can observe untranslated protocol pairs; this external check cannot tell"),
+			Remedy: i18n.T("在面板里运行 /doctor，或查看日志中是否有「没有为 X → Y 注册翻译器」", "run /doctor from the dashboard, or look for \"no translator registered for X → Y\" in the log"),
 		}
 	}
 	if len(t.Untranslated) == 0 {
-		return Result{Level: Pass, Detail: "没有观察到缺少翻译器的协议组合"}
+		return Result{Level: Pass, Detail: i18n.T("没有观察到缺少翻译器的协议组合", "no protocol pairs missing a translator were observed")}
 	}
 	return Result{
 		Level: Fail,
-		Detail: fmt.Sprintf("%d 个协议组合没有翻译器，报文被原样转发: %s",
+		Detail: fmt.Sprintf(i18n.T("%d 个协议组合没有翻译器，报文被原样转发: %s", "%d protocol pairs have no translator; payloads forwarded untouched: %s"),
 			len(t.Untranslated), strings.Join(t.Untranslated, ", ")),
-		Remedy: "运行 \"slimproxy routes\" 查看支持的组合；把客户端改用受支持的协议，" +
-			"或改用与凭据匹配的上游",
+		Remedy: i18n.T(
+			"运行 \"slimproxy routes\" 查看支持的组合；把客户端改用受支持的协议，或改用与凭据匹配的上游",
+			"run \"slimproxy routes\" to see supported pairs; switch the client to a supported protocol, or to an upstream matching the credentials"),
 	}
 }
 
@@ -204,8 +207,8 @@ func (t Target) checkListenPort(ctx context.Context) Result {
 	if t.Port <= 0 || t.Port > 65535 {
 		return Result{
 			Level:  Unknown,
-			Detail: fmt.Sprintf("端口 %d 不是合法端口，无法检查监听状态", t.Port),
-			Remedy: "在配置里设置 1-65535 之间的 port；若配置文件本身有问题，先看 config-fields 这一项",
+			Detail: fmt.Sprintf(i18n.T("端口 %d 不是合法端口，无法检查监听状态", "port %d is not a valid port; the listen state cannot be checked"), t.Port),
+			Remedy: i18n.T("在配置里设置 1-65535 之间的 port；若配置文件本身有问题，先看 config-fields 这一项", "set port between 1-65535 in the config; if the config itself is broken, see config-fields first"),
 		}
 	}
 
@@ -219,8 +222,8 @@ func (t Target) checkListenPort(ctx context.Context) Result {
 		if ctx.Err() != nil {
 			return Result{
 				Level:  Unknown,
-				Detail: fmt.Sprintf("检查被取消或超时，未能确定 %s 的状态", addr),
-				Remedy: "重新运行",
+				Detail: fmt.Sprintf(i18n.T("检查被取消或超时，未能确定 %s 的状态", "the check was canceled or timed out; the state of %s is undetermined"), addr),
+				Remedy: i18n.T("重新运行", "run it again"),
 				Err:    ctx.Err(),
 			}
 		}
@@ -228,8 +231,8 @@ func (t Target) checkListenPort(ctx context.Context) Result {
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			return Result{
 				Level:  Unknown,
-				Detail: fmt.Sprintf("探测 %s 超时，无法判断是否被占用", addr),
-				Remedy: "重试；持续超时通常意味着防火墙在丢包而非端口空闲",
+				Detail: fmt.Sprintf(i18n.T("探测 %s 超时，无法判断是否被占用", "probing %s timed out; whether it is in use cannot be determined"), addr),
+				Remedy: i18n.T("重试；持续超时通常意味着防火墙在丢包而非端口空闲", "retry; persistent timeouts usually mean a firewall is dropping packets, not that the port is free"),
 				Err:    err,
 			}
 		}
@@ -240,8 +243,8 @@ func (t Target) checkListenPort(ctx context.Context) Result {
 		if bindErr != nil {
 			return Result{
 				Level:  Fail,
-				Detail: fmt.Sprintf("%s 无法连接也无法绑定: %v", addr, bindErr),
-				Remedy: "检查地址是否合法、端口是否被系统保留、是否需要提升权限",
+				Detail: fmt.Sprintf(i18n.T("%s 无法连接也无法绑定: %v", "%s can be neither connected to nor bound: %v"), addr, bindErr),
+				Remedy: i18n.T("检查地址是否合法、端口是否被系统保留、是否需要提升权限", "check that the address is valid, the port is not system-reserved, and whether elevation is needed"),
 				Err:    bindErr,
 			}
 		}
@@ -251,7 +254,7 @@ func (t Target) checkListenPort(ctx context.Context) Result {
 		// never touches.
 		return Result{
 			Level:  Pass,
-			Detail: fmt.Sprintf("%s 空闲，可以绑定", addr),
+			Detail: fmt.Sprintf(i18n.T("%s 空闲，可以绑定", "%s is free and can be bound"), addr),
 		}
 	}
 	_ = conn.Close()
@@ -260,19 +263,19 @@ func (t Target) checkListenPort(ctx context.Context) Result {
 	healthy, herr := probeHealthz(ctx, addr)
 	switch {
 	case healthy:
-		return Result{Level: Pass, Detail: fmt.Sprintf("%s 已被 slimproxy 占用且健康", addr)}
+		return Result{Level: Pass, Detail: fmt.Sprintf(i18n.T("%s 已被 slimproxy 占用且健康", "%s is held by slimproxy and healthy"), addr)}
 	case herr != nil:
 		return Result{
 			Level:  Fail,
-			Detail: fmt.Sprintf("%s 被占用，但 /healthz 无响应: %v", addr, herr),
-			Remedy: "另一个程序占用了该端口；换 -port 或结束占用它的进程",
+			Detail: fmt.Sprintf(i18n.T("%s 被占用，但 /healthz 无响应: %v", "%s is in use, but /healthz does not answer: %v"), addr, herr),
+			Remedy: i18n.T("另一个程序占用了该端口；换 -port 或结束占用它的进程", "another program holds the port; pick another with -port or end that process"),
 			Err:    herr,
 		}
 	default:
 		return Result{
 			Level:  Fail,
-			Detail: fmt.Sprintf("%s 被占用，/healthz 返回了非 200", addr),
-			Remedy: "另一个程序占用了该端口；换 -port 或结束占用它的进程",
+			Detail: fmt.Sprintf(i18n.T("%s 被占用，/healthz 返回了非 200", "%s is in use and /healthz returned non-200"), addr),
+			Remedy: i18n.T("另一个程序占用了该端口；换 -port 或结束占用它的进程", "another program holds the port; pick another with -port or end that process"),
 		}
 	}
 }
@@ -299,8 +302,8 @@ func (t Target) checkCredentials(ctx context.Context) Result {
 	if t.AuthDirErr != nil {
 		return Result{
 			Level:  Unknown,
-			Detail: fmt.Sprintf("无法解析 auth-dir: %v", t.AuthDirErr),
-			Remedy: "检查 auth-dir 的写法；无法确定目录时不能判断凭据是否可用",
+			Detail: fmt.Sprintf(i18n.T("无法解析 auth-dir: %v", "cannot resolve auth-dir: %v"), t.AuthDirErr),
+			Remedy: i18n.T("检查 auth-dir 的写法；无法确定目录时不能判断凭据是否可用", "check how auth-dir is written; without the directory, credential usability cannot be judged"),
 			Err:    t.AuthDirErr,
 		}
 	}
@@ -313,15 +316,15 @@ func (t Target) checkCredentials(ctx context.Context) Result {
 		if os.IsNotExist(err) {
 			return Result{
 				Level:  Fail,
-				Detail: fmt.Sprintf("auth-dir %s 不存在", dir),
-				Remedy: "启动 slimproxy 会创建它；之后需要放入至少一个凭据文件",
+				Detail: fmt.Sprintf(i18n.T("auth-dir %s 不存在", "auth-dir %s does not exist"), dir),
+				Remedy: i18n.T("启动 slimproxy 会创建它；之后需要放入至少一个凭据文件", "starting slimproxy creates it; at least one credential file must then be placed inside"),
 				Err:    err,
 			}
 		}
 		return Result{
 			Level:  Unknown,
-			Detail: fmt.Sprintf("无法读取 auth-dir %s: %v", dir, err),
-			Remedy: "检查目录权限",
+			Detail: fmt.Sprintf(i18n.T("无法读取 auth-dir %s: %v", "cannot read auth-dir %s: %v"), dir, err),
+			Remedy: i18n.T("检查目录权限", "check directory permissions"),
 			Err:    err,
 		}
 	}
@@ -333,14 +336,14 @@ func (t Target) checkCredentials(ctx context.Context) Result {
 		}
 		body, readErr := os.ReadFile(filepath.Join(dir, e.Name()))
 		if readErr != nil {
-			bad = append(bad, e.Name()+"（无法读取）")
+			bad = append(bad, e.Name()+i18n.T("（无法读取）", " (unreadable)"))
 			continue
 		}
 		var probe struct {
 			Disabled bool `json:"disabled"`
 		}
 		if json.Unmarshal(body, &probe) != nil {
-			bad = append(bad, e.Name()+"（不是合法 JSON）")
+			bad = append(bad, e.Name()+i18n.T("（不是合法 JSON）", " (not valid JSON)"))
 			continue
 		}
 		// A disabled credential parses perfectly and is worth exactly nothing:
@@ -350,7 +353,7 @@ func (t Target) checkCredentials(ctx context.Context) Result {
 		// requests, and fail every one -- the precise situation this check
 		// exists to catch.
 		if probe.Disabled {
-			bad = append(bad, e.Name()+"（已禁用）")
+			bad = append(bad, e.Name()+i18n.T("（已禁用）", " (disabled)"))
 			continue
 		}
 		ok = append(ok, e.Name())
@@ -360,23 +363,23 @@ func (t Target) checkCredentials(ctx context.Context) Result {
 	case len(ok) == 0 && len(bad) == 0:
 		return Result{
 			Level:  Fail,
-			Detail: fmt.Sprintf("auth-dir %s 中没有凭据文件", dir),
-			Remedy: "放入一个 OAuth 凭据 JSON；没有凭据时代理会接受请求但每一个都会失败",
+			Detail: fmt.Sprintf(i18n.T("auth-dir %s 中没有凭据文件", "auth-dir %s contains no credential files"), dir),
+			Remedy: i18n.T("放入一个 OAuth 凭据 JSON；没有凭据时代理会接受请求但每一个都会失败", "place an OAuth credential JSON inside; with none, the proxy accepts requests and fails every one"),
 		}
 	case len(ok) == 0:
 		return Result{
 			Level:  Fail,
-			Detail: fmt.Sprintf("%d 个凭据文件全部不可用: %s", len(bad), strings.Join(bad, ", ")),
-			Remedy: "重新生成或启用这些凭据；代理会接受请求但每一个都会失败",
+			Detail: fmt.Sprintf(i18n.T("%d 个凭据文件全部不可用: %s", "all %d credential files are unusable: %s"), len(bad), strings.Join(bad, ", ")),
+			Remedy: i18n.T("重新生成或启用这些凭据；代理会接受请求但每一个都会失败", "regenerate or enable these credentials; the proxy accepts requests and fails every one"),
 		}
 	case len(bad) > 0:
 		return Result{
 			Level:  Warn,
-			Detail: fmt.Sprintf("%d 个凭据可用，%d 个不可用: %s", len(ok), len(bad), strings.Join(bad, ", ")),
-			Remedy: "移除、重新生成或启用这些凭据文件",
+			Detail: fmt.Sprintf(i18n.T("%d 个凭据可用，%d 个不可用: %s", "%d credentials usable, %d not: %s"), len(ok), len(bad), strings.Join(bad, ", ")),
+			Remedy: i18n.T("移除、重新生成或启用这些凭据文件", "remove, regenerate or enable these credential files"),
 		}
 	default:
-		return Result{Level: Pass, Detail: fmt.Sprintf("%d 个凭据文件可解析（未校验有效期与冷却状态）", len(ok))}
+		return Result{Level: Pass, Detail: fmt.Sprintf(i18n.T("%d 个凭据文件可解析（未校验有效期与冷却状态）", "%d credential files parse (validity and cooldown not verified)"), len(ok))}
 	}
 }
 
@@ -390,8 +393,8 @@ func (t Target) checkConfigFields(ctx context.Context) Result {
 	if t.ConfigPath == "" {
 		return Result{
 			Level:  Unknown,
-			Detail: "未提供配置文件路径",
-			Remedy: "用 -config 指定配置文件后重试",
+			Detail: i18n.T("未提供配置文件路径", "no config file path was given"),
+			Remedy: i18n.T("用 -config 指定配置文件后重试", "point -config at the config file and retry"),
 		}
 	}
 	// Problems the loader already found. Reported here rather than aborting the
@@ -400,16 +403,16 @@ func (t Target) checkConfigFields(ctx context.Context) Result {
 	if len(t.ConfigErrs) > 0 {
 		return Result{
 			Level:  Fail,
-			Detail: "配置存在问题: " + strings.Join(t.ConfigErrs, "; "),
-			Remedy: "出错的字段会退回零值使用（例如 port 会变成 0），必须修正",
+			Detail: i18n.T("配置存在问题: ", "the config has problems: ") + strings.Join(t.ConfigErrs, "; "),
+			Remedy: i18n.T("出错的字段会退回零值使用（例如 port 会变成 0），必须修正", "broken fields fall back to zero values (port becomes 0, for example); they must be fixed"),
 		}
 	}
 	body, err := os.ReadFile(t.ConfigPath)
 	if err != nil {
 		return Result{
 			Level:  Fail,
-			Detail: fmt.Sprintf("无法读取配置 %s: %v", t.ConfigPath, err),
-			Remedy: "确认路径正确、文件可读",
+			Detail: fmt.Sprintf(i18n.T("无法读取配置 %s: %v", "cannot read config %s: %v"), t.ConfigPath, err),
+			Remedy: i18n.T("确认路径正确、文件可读", "confirm the path is right and the file is readable"),
 			Err:    err,
 		}
 	}
@@ -417,19 +420,19 @@ func (t Target) checkConfigFields(ctx context.Context) Result {
 	if err != nil {
 		return Result{
 			Level:  Fail,
-			Detail: fmt.Sprintf("配置无法解析: %v", err),
-			Remedy: "修正 YAML 语法",
+			Detail: fmt.Sprintf(i18n.T("配置无法解析: %v", "the config does not parse: %v"), err),
+			Remedy: i18n.T("修正 YAML 语法", "fix the YAML syntax"),
 			Err:    err,
 		}
 	}
 	if len(unknown) > 0 {
 		return Result{
 			Level:  Fail,
-			Detail: fmt.Sprintf("配置中有本二进制不认识的字段: %s", strings.Join(unknown, ", ")),
-			Remedy: "字段名写错，或这个二进制比配置旧——重新构建后再试",
+			Detail: fmt.Sprintf(i18n.T("配置中有本二进制不认识的字段: %s", "the config carries fields this binary does not know: %s"), strings.Join(unknown, ", ")),
+			Remedy: i18n.T("字段名写错，或这个二进制比配置旧——重新构建后再试", "a field name is misspelled, or this binary is older than the config -- rebuild and retry"),
 		}
 	}
-	return Result{Level: Pass, Detail: "配置字段与本二进制匹配"}
+	return Result{Level: Pass, Detail: i18n.T("配置字段与本二进制匹配", "config fields match this binary")}
 }
 
 // checkUpstreamDNS looks for DNS interception on the upstream endpoint.
@@ -439,8 +442,8 @@ func (t Target) checkUpstreamDNS(ctx context.Context) Result {
 	if err != nil {
 		return Result{
 			Level:  Unknown,
-			Detail: fmt.Sprintf("无法解析 %s: %v", host, err),
-			Remedy: "检查 DNS 配置；解析不了就无法判断是否被劫持",
+			Detail: fmt.Sprintf(i18n.T("无法解析 %s: %v", "cannot resolve %s: %v"), host, err),
+			Remedy: i18n.T("检查 DNS 配置；解析不了就无法判断是否被劫持", "check DNS configuration; without resolution, hijacking cannot be judged"),
 			Err:    err,
 		}
 	}
@@ -448,14 +451,15 @@ func (t Target) checkUpstreamDNS(ctx context.Context) Result {
 		if fakeIPNet.Contains(ip) {
 			return Result{
 				Level: Warn,
-				Detail: fmt.Sprintf("%s 解析为 %s，属于 RFC 2544 保留段（198.18.0.0/15）",
+				Detail: fmt.Sprintf(i18n.T("%s 解析为 %s，属于 RFC 2544 保留段（198.18.0.0/15）", "%s resolves to %s, inside the RFC 2544 reserved range (198.18.0.0/15)"),
 					host, ip),
-				Remedy: "本机代理软件在用 fake-ip 劫持 DNS。请求会经由该代理，长连接可能不稳；" +
-					"在代理规则中让 api.anthropic.com 直连可消除这一层",
+				Remedy: i18n.T(
+					"本机代理软件在用 fake-ip 劫持 DNS。请求会经由该代理，长连接可能不稳；在代理规则中让 api.anthropic.com 直连可消除这一层",
+					"a local proxy is hijacking DNS via fake-ip. Requests go through that proxy and long-lived connections may be unstable; excluding api.anthropic.com in the proxy rules removes this layer"),
 			}
 		}
 	}
-	return Result{Level: Pass, Detail: fmt.Sprintf("%s 解析到真实地址（%s）", host, ips[0])}
+	return Result{Level: Pass, Detail: fmt.Sprintf(i18n.T("%s 解析到真实地址（%s）", "%s resolves to a real address (%s)"), host, ips[0])}
 }
 
 // checkUpstreamReach establishes whether the upstream is actually usable.
@@ -469,8 +473,8 @@ func (t Target) checkUpstreamReach(ctx context.Context) Result {
 		if ctx.Err() != nil {
 			return Result{
 				Level:  Unknown,
-				Detail: "检查被取消或超时，未能确定上游可达性",
-				Remedy: "重新运行",
+				Detail: i18n.T("检查被取消或超时，未能确定上游可达性", "the check was canceled or timed out; upstream reachability is undetermined"),
+				Remedy: i18n.T("重新运行", "run it again"),
 				Err:    ctx.Err(),
 			}
 		}
@@ -478,20 +482,20 @@ func (t Target) checkUpstreamReach(ctx context.Context) Result {
 		if errors.As(err, &dnsErr) {
 			return Result{
 				Level:  Unknown,
-				Detail: fmt.Sprintf("无法解析 %s，可达性未知", addr),
-				Remedy: "先解决 DNS（见 upstream-dns 一项）",
+				Detail: fmt.Sprintf(i18n.T("无法解析 %s，可达性未知", "cannot resolve %s; reachability unknown"), addr),
+				Remedy: i18n.T("先解决 DNS（见 upstream-dns 一项）", "fix DNS first (see the upstream-dns item)"),
 				Err:    err,
 			}
 		}
 		return Result{
 			Level:  Fail,
-			Detail: fmt.Sprintf("无法连接 %s: %v", addr, err),
-			Remedy: "上游不可达时每个请求都会失败。检查网络与代理设置",
+			Detail: fmt.Sprintf(i18n.T("无法连接 %s: %v", "cannot connect to %s: %v"), addr, err),
+			Remedy: i18n.T("上游不可达时每个请求都会失败。检查网络与代理设置", "with the upstream unreachable every request fails. Check the network and proxy settings"),
 			Err:    err,
 		}
 	}
 	_ = conn.Close()
-	return Result{Level: Pass, Detail: fmt.Sprintf("%s TCP 可连接（未验证 TLS）", addr)}
+	return Result{Level: Pass, Detail: fmt.Sprintf(i18n.T("%s TCP 可连接（未验证 TLS）", "%s accepts TCP (TLS not verified)"), addr)}
 }
 
 // checkTunnel reports the three states a tunnel can be in, which a single
@@ -505,21 +509,21 @@ func (t Target) checkTunnel(ctx context.Context) Result {
 	if t.TunnelErr != nil {
 		return Result{
 			Level:  Unknown,
-			Detail: fmt.Sprintf("存在 cloudflared 配置但无法理解: %v", t.TunnelErr),
-			Remedy: "修正 ~/.cloudflared/config.yml，或删除它以表示确实没有隧道",
+			Detail: fmt.Sprintf(i18n.T("存在 cloudflared 配置但无法理解: %v", "a cloudflared config exists but could not be understood: %v"), t.TunnelErr),
+			Remedy: i18n.T("修正 ~/.cloudflared/config.yml，或删除它以表示确实没有隧道", "fix ~/.cloudflared/config.yml, or delete it to state there really is no tunnel"),
 			Err:    t.TunnelErr,
 		}
 	}
 	if t.TunnelName == "" {
-		return Result{Level: Pass, Detail: "未配置隧道（跳过）"}
+		return Result{Level: Pass, Detail: i18n.T("未配置隧道（跳过）", "no tunnel configured (skipped)")}
 	}
 
 	bin, err := exec.LookPath("cloudflared")
 	if err != nil {
 		return Result{
 			Level:  Unknown,
-			Detail: "找不到 cloudflared 可执行文件",
-			Remedy: "安装 cloudflared 或将其加入 PATH；否则无法判断隧道状态",
+			Detail: i18n.T("找不到 cloudflared 可执行文件", "cloudflared executable not found"),
+			Remedy: i18n.T("安装 cloudflared 或将其加入 PATH；否则无法判断隧道状态", "install cloudflared or add it to PATH; without it the tunnel state cannot be judged"),
 			Err:    err,
 		}
 	}
@@ -530,15 +534,15 @@ func (t Target) checkTunnel(ctx context.Context) Result {
 		if strings.Contains(strings.ToLower(text), "not found") {
 			return Result{
 				Level:  Fail,
-				Detail: fmt.Sprintf("隧道 %q 不存在", t.TunnelName),
-				Remedy: "运行 cloudflared tunnel create " + t.TunnelName,
+				Detail: fmt.Sprintf(i18n.T("隧道 %q 不存在", "tunnel %q does not exist"), t.TunnelName),
+				Remedy: i18n.T("运行 ", "run ") + "cloudflared tunnel create " + t.TunnelName,
 				Err:    err,
 			}
 		}
 		// Include err, not just the captured output: a command killed by the
 		// context timeout produces no output at all, and reporting an empty
 		// string after "失败:" tells the operator nothing.
-		detail := fmt.Sprintf("查询隧道状态失败: %v", err)
+		detail := fmt.Sprintf(i18n.T("查询隧道状态失败: %v", "querying the tunnel state failed: %v"), err)
 		if i := strings.IndexByte(text, '\n'); i >= 0 {
 			if line := strings.TrimSpace(text[:i]); line != "" {
 				detail += "（" + line + "）"
@@ -549,7 +553,7 @@ func (t Target) checkTunnel(ctx context.Context) Result {
 		return Result{
 			Level:  Unknown,
 			Detail: detail,
-			Remedy: "该查询需要网络和 cert.pem；无法查询时不能断定隧道是否正常",
+			Remedy: i18n.T("该查询需要网络和 cert.pem；无法查询时不能断定隧道是否正常", "the query needs network access and cert.pem; without it the tunnel cannot be pronounced healthy"),
 			Err:    err,
 		}
 	}
@@ -557,8 +561,8 @@ func (t Target) checkTunnel(ctx context.Context) Result {
 	if strings.Contains(text, "does not have any active connection") {
 		return Result{
 			Level:  Fail,
-			Detail: fmt.Sprintf("隧道 %q 存在但没有任何活动连接", t.TunnelName),
-			Remedy: "cloudflared 未运行，或连接反复断开；此状态下外网访问返回 502",
+			Detail: fmt.Sprintf(i18n.T("隧道 %q 存在但没有任何活动连接", "tunnel %q exists but has no active connections"), t.TunnelName),
+			Remedy: i18n.T("cloudflared 未运行，或连接反复断开；此状态下外网访问返回 502", "cloudflared is not running, or connections keep dropping; in this state public access returns 502"),
 		}
 	}
 
@@ -570,28 +574,28 @@ func (t Target) checkTunnel(ctx context.Context) Result {
 		// PASS would be worse.
 		return Result{
 			Level:  Unknown,
-			Detail: "无法解析 cloudflared 的输出（可能是版本差异）",
-			Remedy: fmt.Sprintf("手动运行 cloudflared tunnel info %s 自行查看", t.TunnelName),
+			Detail: i18n.T("无法解析 cloudflared 的输出（可能是版本差异）", "cannot parse cloudflared output (possibly a version difference)"),
+			Remedy: fmt.Sprintf(i18n.T("手动运行 cloudflared tunnel info %s 自行查看", "run cloudflared tunnel info %s by hand and inspect it yourself"), t.TunnelName),
 		}
 	case Fail:
 		// The one state this check exists for: a process that looks alive in a
 		// task list while the hostname serves 502.
 		return Result{
 			Level:  Fail,
-			Detail: fmt.Sprintf("隧道 %q 的连接表中没有任何连接", t.TunnelName),
-			Remedy: "cloudflared 未运行或连接已全部断开；此状态下外网访问返回 502",
+			Detail: fmt.Sprintf(i18n.T("隧道 %q 的连接表中没有任何连接", "tunnel %q has no connections in its connection table"), t.TunnelName),
+			Remedy: i18n.T("cloudflared 未运行或连接已全部断开；此状态下外网访问返回 502", "cloudflared is not running or every connection has dropped; in this state public access returns 502"),
 		}
 	}
 
-	detail := fmt.Sprintf("隧道 %q 有 %d 个活动连接", t.TunnelName, conn.Count)
+	detail := fmt.Sprintf(i18n.T("隧道 %q 有 %d 个活动连接", "tunnel %q has %d active connections"), t.TunnelName, conn.Count)
 	if t.TunnelHostname != "" {
-		detail += "，对外主机名 " + t.TunnelHostname
+		detail += i18n.T("，对外主机名 ", ", public hostname ") + t.TunnelHostname
 	}
 	if fake := conn.FakeIP; fake != "" {
 		return Result{
 			Level:  Warn,
-			Detail: detail + fmt.Sprintf("，但边缘地址 %s 属于保留段", fake),
-			Remedy: "隧道流量经由本机代理，长连接可能反复断开；让 *.argotunnel.com 直连可消除",
+			Detail: detail + fmt.Sprintf(i18n.T("，但边缘地址 %s 属于保留段", ", but edge address %s is in the reserved range"), fake),
+			Remedy: i18n.T("隧道流量经由本机代理，长连接可能反复断开；让 *.argotunnel.com 直连可消除", "tunnel traffic is going through a local proxy and long-lived connections may keep dropping; excluding *.argotunnel.com from the proxy removes this layer"),
 		}
 	}
 	return Result{Level: Pass, Detail: detail}
