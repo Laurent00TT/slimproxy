@@ -74,6 +74,20 @@ func (f *InFlight) End(token int64) {
 	delete(f.live, token)
 }
 
+// Started counts requests that have entered the tracker since it was created,
+// finished ones included.
+//
+// The live map cannot answer "did anything ever reach this?": a request that
+// arrived and completed leaves it exactly as empty as a middleware that was
+// never registered at all. That distinction is the whole difference between a
+// working feature and a silently dead one -- the panel shows nothing either way
+// -- and only a monotonic counter can draw it.
+func (f *InFlight) Started() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.next
+}
+
 // Snapshot lists what is in progress, oldest first.
 //
 // Oldest first because the oldest is the one worth looking at: it is the
