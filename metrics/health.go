@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // FailureClass groups failures by what an operator would do about them.
@@ -29,13 +31,13 @@ const (
 func (c FailureClass) String() string {
 	switch c {
 	case ClassUnreachable:
-		return "上游不可达"
+		return i18n.T("上游不可达", "upstream unreachable")
 	case ClassQuota:
-		return "配额限流"
+		return i18n.T("配额限流", "quota limited")
 	case ClassUpstream:
-		return "上游报错"
+		return i18n.T("上游报错", "upstream error")
 	default:
-		return "正常"
+		return i18n.T("正常", "healthy")
 	}
 }
 
@@ -98,9 +100,14 @@ func (e HealthEvent) State() string {
 // Text is the one line a human reads.
 func (e HealthEvent) Text() string {
 	if e.Degraded {
-		return fmt.Sprintf("连续 %d 次请求失败（%s）——上游持续不可用", e.Streak, e.Class)
+		return fmt.Sprintf(i18n.T(
+			"连续 %d 次请求失败（%s）——上游持续不可用",
+			"%d consecutive request failures (%s) -- upstream persistently unavailable"),
+			e.Streak, e.Class)
 	}
-	return fmt.Sprintf("已恢复：先前连续 %d 次失败（%s），持续 %s",
+	return fmt.Sprintf(i18n.T(
+		"已恢复：先前连续 %d 次失败（%s），持续 %s",
+		"recovered: previously %d consecutive failures (%s), lasting %s"),
 		e.Streak, e.Class, e.Lasted.Round(time.Second))
 }
 

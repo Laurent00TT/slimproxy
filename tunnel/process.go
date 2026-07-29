@@ -20,6 +20,7 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/Laurent00TT/slimproxy/fsperm"
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // pidFileName is where a detached tunnel records itself, inside the state dir.
@@ -72,14 +73,14 @@ func readRecord(stateDir string) (record, error) {
 		if os.IsNotExist(err) {
 			return record{}, errNoRecord
 		}
-		return record{}, fmt.Errorf("无法读取 PID 记录: %w", err)
+		return record{}, fmt.Errorf(i18n.T("无法读取 PID 记录: %w", "cannot read the PID record: %w"), err)
 	}
 	var r record
 	if err := json.Unmarshal(body, &r); err != nil {
-		return record{}, fmt.Errorf("PID 记录已损坏: %w", err)
+		return record{}, fmt.Errorf(i18n.T("PID 记录已损坏: %w", "the PID record is corrupt: %w"), err)
 	}
 	if r.PID <= 0 {
-		return record{}, fmt.Errorf("PID 记录中的 PID 非法: %d", r.PID)
+		return record{}, fmt.Errorf(i18n.T("PID 记录中的 PID 非法: %d", "the PID in the record is invalid: %d"), r.PID)
 	}
 	return r, nil
 }
@@ -94,22 +95,22 @@ func claimRecord(stateDir string) (*os.File, error) {
 		stateDir = "."
 	}
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return nil, fmt.Errorf("创建状态目录失败: %w", err)
+		return nil, fmt.Errorf(i18n.T("创建状态目录失败: %w", "creating the state directory failed: %w"), err)
 	}
 	path := recordPath(stateDir)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
-			return nil, fmt.Errorf("已存在 PID 记录，可能有另一个实例正在启动或运行")
+			return nil, errors.New(i18n.T("已存在 PID 记录，可能有另一个实例正在启动或运行", "a PID record already exists; another instance may be starting or running"))
 		}
-		return nil, fmt.Errorf("无法创建 PID 记录: %w", err)
+		return nil, fmt.Errorf(i18n.T("无法创建 PID 记录: %w", "cannot create the PID record: %w"), err)
 	}
 	// The record names the tunnel and the binary, and `down` trusts it before
 	// terminating a process. On Windows the 0600 above sets an attribute and
 	// leaves the parent's inherited ACEs, so another local account could
 	// rewrite it.
 	if rerr := fsperm.Restrict(path); rerr != nil {
-		log.Warnf("slimproxy: 未能收紧 PID 记录 %s 的权限: %v", path, rerr)
+		log.Warnf(i18n.T("slimproxy: 未能收紧 PID 记录 %s 的权限: %v", "slimproxy: could not tighten permissions on PID record %s: %v"), path, rerr)
 	}
 	return f, nil
 }
@@ -181,7 +182,7 @@ func verifyRecord(rec record) (identity, error) {
 
 	want := expectedImageName(rec.Binary)
 	if !binaryMatches(info.Name, want) {
-		return identityMismatch, fmt.Errorf("PID %d 现在是 %q，不是 %q", rec.PID, info.Name, want)
+		return identityMismatch, fmt.Errorf(i18n.T("PID %d 现在是 %q，不是 %q", "PID %d is now %q, not %q"), rec.PID, info.Name, want)
 	}
 
 	// A process that started before we launched ours cannot be ours, whatever
@@ -189,8 +190,9 @@ func verifyRecord(rec record) (identity, error) {
 	// alone cannot, because the replacement may happen to be cloudflared too.
 	if !info.Created.IsZero() && !rec.Started.IsZero() {
 		if info.Created.Before(rec.Started.Add(-30 * time.Second)) {
-			return identityMismatch, fmt.Errorf(
+			return identityMismatch, fmt.Errorf(i18n.T(
 				"PID %d 的启动时间(%s)早于记录(%s)，是被复用的 PID",
+				"PID %d started at %s, before the record's %s: the PID has been reused"),
 				rec.PID, info.Created.Format(time.RFC3339), rec.Started.Format(time.RFC3339))
 		}
 	}
@@ -236,7 +238,7 @@ func queryProcess(pid int) (procInfo, bool, error) {
 func queryProcessWindows(pid int) (procInfo, bool, error) {
 	out, err := exec.Command("tasklist", "/FI", "PID eq "+strconv.Itoa(pid), "/FO", "CSV", "/NH").Output()
 	if err != nil {
-		return procInfo{}, false, fmt.Errorf("tasklist 查询失败: %w", err)
+		return procInfo{}, false, fmt.Errorf(i18n.T("tasklist 查询失败: %w", "tasklist query failed: %w"), err)
 	}
 	name, present := parseTasklistRow(string(out), pid)
 	if !present {
@@ -311,7 +313,7 @@ func queryProcessUnix(pid int) (procInfo, bool, error) {
 		if errors.As(err, &ee) && ee.ExitCode() == 1 {
 			return procInfo{}, false, nil // no such process
 		}
-		return procInfo{}, false, fmt.Errorf("ps 查询失败: %w", err)
+		return procInfo{}, false, fmt.Errorf(i18n.T("ps 查询失败: %w", "ps query failed: %w"), err)
 	}
 	line := strings.TrimSpace(string(out))
 	if line == "" {

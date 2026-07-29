@@ -2,6 +2,7 @@ package journal
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 
 	"github.com/Laurent00TT/slimproxy/fsperm"
 	"github.com/Laurent00TT/slimproxy/metrics"
@@ -59,13 +62,13 @@ type Writer struct {
 // Open prepares a writer over dir, creating it if needed.
 func Open(dir string, retentionDays int) (*Writer, error) {
 	if strings.TrimSpace(dir) == "" {
-		return nil, fmt.Errorf("journal: 未指定目录")
+		return nil, errors.New(i18n.T("journal: 未指定目录", "journal: no directory given"))
 	}
 	if retentionDays <= 0 {
 		retentionDays = DefaultRetentionDays
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("journal: 创建目录 %s 失败: %w", dir, err)
+		return nil, fmt.Errorf(i18n.T("journal: 创建目录 %s 失败: %w", "journal: creating directory %s failed: %w"), dir, err)
 	}
 	// Same reasoning as everywhere else the project writes: the mode argument
 	// is not access control on Windows. The journal names credentials and

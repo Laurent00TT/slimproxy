@@ -8,13 +8,14 @@ package credentials
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // Credential is one credential file, as far as this package needs to read it.
@@ -66,17 +67,17 @@ const (
 func (s Status) String() string {
 	switch s {
 	case StatusOK:
-		return "可用"
+		return i18n.T("可用", "usable")
 	case StatusExpiring:
-		return "即将过期"
+		return i18n.T("即将过期", "expiring")
 	case StatusExpired:
-		return "已过期"
+		return i18n.T("已过期", "expired")
 	case StatusDisabled:
-		return "已禁用"
+		return i18n.T("已禁用", "disabled")
 	case StatusBroken:
-		return "损坏"
+		return i18n.T("损坏", "broken")
 	default:
-		return "未知"
+		return i18n.T("未知", "unknown")
 	}
 }
 
@@ -166,9 +167,9 @@ func List(dir string) ([]Credential, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("凭据目录 %s 不存在", dir)
+			return nil, fmt.Errorf(i18n.T("凭据目录 %s 不存在", "credential directory %s does not exist"), dir)
 		}
-		return nil, fmt.Errorf("无法读取凭据目录 %s: %w", dir, err)
+		return nil, fmt.Errorf(i18n.T("无法读取凭据目录 %s: %w", "cannot read credential directory %s: %w"), dir, err)
 	}
 
 	var out []Credential
@@ -186,12 +187,12 @@ func read(path string) Credential {
 	c := Credential{File: path, Name: filepath.Base(path)}
 	body, err := os.ReadFile(path)
 	if err != nil {
-		c.Err = fmt.Errorf("无法读取: %w", err)
+		c.Err = fmt.Errorf(i18n.T("无法读取: %w", "cannot read: %w"), err)
 		return c
 	}
 	var raw rawCredential
 	if err := json.Unmarshal(body, &raw); err != nil {
-		c.Err = fmt.Errorf("不是合法 JSON: %w", err)
+		c.Err = fmt.Errorf(i18n.T("不是合法 JSON: %w", "not valid JSON: %w"), err)
 		return c
 	}
 	c.Provider = raw.Type
@@ -218,10 +219,15 @@ func parseTime(s string) time.Time {
 }
 
 // ErrNotFound is returned when no credential matches an identifier.
-var ErrNotFound = errors.New("没有匹配的凭据")
+//
+// i18n.NewError, not errors.New(i18n.T(...)): a package-level var initialises
+// before main selects the language, so the T would freeze the default. The
+// sentinel's identity -- the pointer errors.Is compares -- is unaffected; only
+// the text is looked up late.
+var ErrNotFound = i18n.NewError("没有匹配的凭据", "no matching credential")
 
 // ErrAmbiguous is returned when an identifier matches more than one.
-var ErrAmbiguous = errors.New("标识匹配到多个凭据")
+var ErrAmbiguous = i18n.NewError("标识匹配到多个凭据", "identifier matches more than one credential")
 
 // Find resolves an identifier to exactly one credential.
 //
@@ -253,7 +259,7 @@ func Find(creds []Credential, id string) (Credential, error) {
 		for _, m := range matches {
 			names = append(names, m.Name)
 		}
-		return Credential{}, fmt.Errorf("%w: %q 匹配 %s", ErrAmbiguous, id, strings.Join(names, ", "))
+		return Credential{}, fmt.Errorf(i18n.T("%w: %q 匹配 %s", "%w: %q matches %s"), ErrAmbiguous, id, strings.Join(names, ", "))
 	}
 }
 
@@ -271,7 +277,7 @@ func stripJSONExt(name string) string {
 
 // ErrLastUsable is returned when removing a credential would leave the proxy
 // with none that can serve a request.
-var ErrLastUsable = errors.New("这是最后一个可用凭据")
+var ErrLastUsable = i18n.NewError("这是最后一个可用凭据", "this is the last usable credential")
 
 // Remove deletes a credential by identifier.
 //
@@ -317,11 +323,13 @@ func RemoveResolved(creds []Credential, target Credential, force bool, now time.
 			}
 		}
 		if remaining == 0 {
-			return fmt.Errorf("%w：删除后代理将接受请求但每一个都会失败", ErrLastUsable)
+			return fmt.Errorf(i18n.T(
+				"%w：删除后代理将接受请求但每一个都会失败",
+				"%w: after removal the proxy will accept requests and fail every one"), ErrLastUsable)
 		}
 	}
 	if err := os.Remove(target.File); err != nil {
-		return fmt.Errorf("删除 %s 失败: %w", target.File, err)
+		return fmt.Errorf(i18n.T("删除 %s 失败: %w", "removing %s failed: %w"), target.File, err)
 	}
 	return nil
 }

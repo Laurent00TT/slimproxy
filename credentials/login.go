@@ -2,12 +2,15 @@ package credentials
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	sdkauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	cliproxyconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // Provider describes one upstream slimproxy can hold credentials for.
@@ -27,17 +30,37 @@ type Provider struct {
 // Derived from the authenticators registered below rather than hand-listed, so
 // the two cannot drift: a provider that appears here but has no authenticator
 // would produce a command that always fails.
-var providers = []Provider{
-	{Name: "claude", Summary: "Anthropic Claude（浏览器授权）", Interactive: true},
-	{Name: "codex", Summary: "OpenAI Codex（浏览器授权）", Interactive: true},
-	{Name: "antigravity", Summary: "Antigravity（浏览器授权）", Interactive: true},
-	{Name: "kimi", Summary: "Kimi（设备码）", Interactive: true},
-	{Name: "xai", Summary: "xAI（设备码）", Interactive: true},
+//
+// The table holds only what does not depend on language -- the brand and how
+// its flow authenticates -- and Providers() renders the summary per call. A
+// package-level var evaluates before main selects the language, so a summary
+// built here would freeze in the default language for the life of the process.
+var providers = []struct {
+	name       string
+	brand      string
+	deviceCode bool // device-code prompt, as opposed to a browser round trip
+}{
+	{name: "claude", brand: "Anthropic Claude"},
+	{name: "codex", brand: "OpenAI Codex"},
+	{name: "antigravity", brand: "Antigravity"},
+	{name: "kimi", brand: "Kimi", deviceCode: true},
+	{name: "xai", brand: "xAI", deviceCode: true},
 }
 
 // Providers returns the supported providers, sorted by name.
 func Providers() []Provider {
-	out := append([]Provider(nil), providers...)
+	out := make([]Provider, 0, len(providers))
+	for _, p := range providers {
+		flow := i18n.T("浏览器授权", "browser sign-in")
+		if p.deviceCode {
+			flow = i18n.T("设备码", "device code")
+		}
+		out = append(out, Provider{
+			Name:        p.name,
+			Summary:     p.brand + i18n.T("（", " (") + flow + i18n.T("）", ")"),
+			Interactive: true,
+		})
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
@@ -54,7 +77,7 @@ func ProviderNames() []string {
 // KnownProvider reports whether name is supported.
 func KnownProvider(name string) bool {
 	for _, p := range providers {
-		if strings.EqualFold(p.Name, name) {
+		if strings.EqualFold(p.name, name) {
 			return true
 		}
 	}
@@ -111,16 +134,16 @@ type LoginRequest struct {
 // needs in order to confirm it landed where the proxy will look.
 func Login(ctx context.Context, req LoginRequest) (string, error) {
 	if !KnownProvider(req.Provider) {
-		return "", fmt.Errorf("不支持的 provider %q（可用: %s）",
+		return "", fmt.Errorf(i18n.T("不支持的 provider %q（可用: %s）", "unsupported provider %q (available: %s)"),
 			req.Provider, strings.Join(ProviderNames(), ", "))
 	}
 	if req.AuthDir == "" {
-		return "", fmt.Errorf("未指定凭据目录")
+		return "", errors.New(i18n.T("未指定凭据目录", "no credential directory given"))
 	}
 	if req.Prompt == nil {
 		// The flows can require a pasted code. Without a prompt the SDK has no
 		// way to ask, and the command would appear to hang.
-		return "", fmt.Errorf("内部错误：登录流程缺少交互回调")
+		return "", errors.New(i18n.T("内部错误：登录流程缺少交互回调", "internal error: login flow has no interaction callback"))
 	}
 
 	mgr := newManager()
@@ -139,7 +162,9 @@ func Login(ctx context.Context, req LoginRequest) (string, error) {
 		// The SDK returns an empty path when it has no store, which cannot
 		// happen here -- but reporting success without a file would leave the
 		// operator believing a credential exists that does not.
-		return "", fmt.Errorf("登录成功但凭据未被写入磁盘；请检查 %s 的权限", req.AuthDir)
+		return "", fmt.Errorf(i18n.T(
+			"登录成功但凭据未被写入磁盘；请检查 %s 的权限",
+			"login succeeded but no credential landed on disk; check permissions on %s"), req.AuthDir)
 	}
 	return savedPath, nil
 }

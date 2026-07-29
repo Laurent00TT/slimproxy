@@ -19,12 +19,21 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/Laurent00TT/slimproxy/i18n"
 	"github.com/Laurent00TT/slimproxy/proxy"
 	"github.com/Laurent00TT/slimproxy/translate"
 	"github.com/Laurent00TT/slimproxy/tui"
 )
 
 func main() {
+	// Language is set twice, and the order matters. The locale guess comes
+	// first so that everything printed before a config is loaded -- usage
+	// errors, "找不到配置文件", init's output -- is already in the operator's
+	// language; the config's lang field then overrides it inside loadConfig,
+	// the one gate every config-reading command passes through. Between the two
+	// points nothing concurrent is running, so the second Set is safe.
+	i18n.Set(i18n.FromLocale(i18n.SystemLocale()))
+
 	cx := newContext()
 	err := dispatch(cx, os.Args[1:])
 	if err == nil {
@@ -189,6 +198,17 @@ func loadConfig(path string) (*proxy.Config, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("parse config %q: %w", path, err)
+	}
+	// The one place a stated language preference takes effect, chosen because
+	// every config-reading command funnels through here. A command that errors
+	// before this line speaks the locale's language; that is the best available
+	// guess about an operator whose config could not be read.
+	//
+	// Applied even when the config later fails Validate: an operator whose
+	// config is broken in some other field still stated which language to
+	// explain the breakage in.
+	if l, ok := i18n.Parse(cfg.Lang); ok {
+		i18n.Set(l)
 	}
 	return &cfg, nil
 }

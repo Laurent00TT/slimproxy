@@ -11,6 +11,8 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/Laurent00TT/slimproxy/journal"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // Inbound request fidelity probing.
@@ -113,17 +115,17 @@ func describeRequest(body []byte, ua, path string, src journal.Source) journal.E
 		// Too large to parse; the size alone is still worth knowing, and
 		// pretending the other fields were measured would be worse than
 		// omitting them.
-		ev.Detail = "方言 " + dialectOf(path) + " · 请求体过大，未解析结构"
+		ev.Detail = i18n.T("方言 ", "dialect ") + dialectOf(path) + i18n.T(" · 请求体过大，未解析结构", " · body too large, structure not parsed")
 		return ev
 	}
 	if !gjson.ValidBytes(body) {
-		ev.Detail = "请求体不是合法 JSON"
+		ev.Detail = i18n.T("请求体不是合法 JSON", "request body is not valid JSON")
 		return ev
 	}
 
 	// The inbound dialect, which the usage record cannot supply: it is decided
 	// by which endpoint the client called, and only a middleware sees that.
-	ev.Detail = "方言 " + dialectOf(path)
+	ev.Detail = i18n.T("方言 ", "dialect ") + dialectOf(path)
 	ev.Model = gjson.GetBytes(body, "model").String()
 	ev.Messages = int(gjson.GetBytes(body, "messages.#").Int())
 

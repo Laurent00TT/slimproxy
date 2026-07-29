@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // Config is the part of a cloudflared configuration this package reads.
@@ -43,7 +45,7 @@ type Config struct {
 func ReadConfig() (cfg Config, found bool, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return Config{}, false, fmt.Errorf("无法确定用户主目录: %w", err)
+		return Config{}, false, fmt.Errorf(i18n.T("无法确定用户主目录: %w", "cannot determine the home directory: %w"), err)
 	}
 	path := filepath.Join(home, ".cloudflared", "config.yml")
 
@@ -52,7 +54,7 @@ func ReadConfig() (cfg Config, found bool, err error) {
 		if os.IsNotExist(err) {
 			return Config{}, false, nil // genuinely not configured
 		}
-		return Config{}, false, fmt.Errorf("无法读取 %s: %w", path, err)
+		return Config{}, false, fmt.Errorf(i18n.T("无法读取 %s: %w", "cannot read %s: %w"), path, err)
 	}
 	return parseConfig(body, path)
 }
@@ -68,10 +70,10 @@ func parseConfig(body []byte, path string) (Config, bool, error) {
 		} `yaml:"ingress"`
 	}
 	if err := yaml.Unmarshal(body, &doc); err != nil {
-		return Config{}, false, fmt.Errorf("%s 解析失败: %w", path, err)
+		return Config{}, false, fmt.Errorf(i18n.T("%s 解析失败: %w", "parsing %s failed: %w"), path, err)
 	}
 	if strings.TrimSpace(doc.Tunnel) == "" {
-		return Config{}, false, fmt.Errorf("%s 中没有 tunnel 字段", path)
+		return Config{}, false, fmt.Errorf(i18n.T("%s 中没有 tunnel 字段", "%s has no tunnel field"), path)
 	}
 	// The tunnel id becomes a command-line argument to cloudflared, so a value
 	// starting with "-" stops being data and becomes a flag.
@@ -83,8 +85,9 @@ func parseConfig(body []byte, path string) (Config, bool, error) {
 	// config, so it is not an active threat; it is a config value silently
 	// promoted to an executable argument, which is worth closing before it is.
 	if !validTunnelID(doc.Tunnel) {
-		return Config{}, false, fmt.Errorf(
+		return Config{}, false, fmt.Errorf(i18n.T(
 			"%s 中的 tunnel 值 %q 不是合法的隧道标识（应为 UUID 或名称，不能以 - 开头）",
+			"the tunnel value %[2]q in %[1]s is not a valid tunnel identifier (expected a UUID or name, must not start with -)"),
 			path, doc.Tunnel)
 	}
 

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // State is where a tunnel sits between "nothing set up" and "serving traffic".
@@ -36,13 +38,13 @@ const (
 func (s State) String() string {
 	switch s {
 	case NotConfigured:
-		return "未配置"
+		return i18n.T("未配置", "not configured")
 	case Configured:
-		return "已配置，未运行"
+		return i18n.T("已配置，未运行", "configured, not running")
 	case Running:
-		return "运行中"
+		return i18n.T("运行中", "running")
 	default:
-		return "未知"
+		return i18n.T("未知", "unknown")
 	}
 }
 
@@ -134,7 +136,7 @@ func (m *Manager) config() (Config, bool, error) {
 // stateDirOrDot renders the state directory the way an operator can act on it.
 func (m *Manager) stateDirOrDot() string {
 	if m.StateDir == "" {
-		return "当前目录"
+		return i18n.T("当前目录", "the current directory")
 	}
 	if abs, err := filepath.Abs(m.StateDir); err == nil {
 		return abs
@@ -149,7 +151,7 @@ func (m *Manager) resolveBinary() (string, error) {
 	}
 	path, err := exec.LookPath("cloudflared")
 	if err != nil {
-		return "", errors.New("找不到 cloudflared 可执行文件；请安装它或加入 PATH")
+		return "", errors.New(i18n.T("找不到 cloudflared 可执行文件；请安装它或加入 PATH", "cloudflared executable not found; install it or add it to PATH"))
 	}
 	return path, nil
 }
@@ -173,7 +175,7 @@ func (m *Manager) localStatus() Status {
 	case cfgErr != nil:
 		st.State = StateUnknown
 		st.Err = cfgErr
-		st.Detail = "存在 cloudflared 配置但无法理解"
+		st.Detail = i18n.T("存在 cloudflared 配置但无法理解", "a cloudflared config exists but could not be understood")
 	case !found:
 		st.State = NotConfigured
 	default:
@@ -189,7 +191,7 @@ func (m *Manager) localStatus() Status {
 			// stays invisible while the file sits on disk.
 			st.State = StateUnknown
 			st.Err = recErr
-			st.Detail = "PID 记录无法读取，无法确定是否有受管实例在运行"
+			st.Detail = i18n.T("PID 记录无法读取，无法确定是否有受管实例在运行", "the PID record is unreadable; whether a managed instance is running cannot be determined")
 		}
 		return st
 	}
@@ -206,19 +208,20 @@ func (m *Manager) localStatus() Status {
 			// process serves another.
 			st.ConfiguredTunnelID = st.TunnelID
 			st.TunnelID = rec.Tunnel
-			st.Detail = fmt.Sprintf("配置已改为隧道 %s，但运行中的进程服务的是 %s；"+
-				"需要 down 后重新 up 才会切换", st.ConfiguredTunnelID, rec.Tunnel)
+			st.Detail = fmt.Sprintf(i18n.T(
+				"配置已改为隧道 %s，但运行中的进程服务的是 %s；需要 down 后重新 up 才会切换",
+				"the config now names tunnel %s, but the running process serves %s; down then up again to switch"), st.ConfiguredTunnelID, rec.Tunnel)
 		}
 	case identityGone:
 		removeRecord(m.StateDir)
-		st.Detail = fmt.Sprintf("上次启动的 cloudflared（PID %d）已退出，记录已清理", rec.PID)
+		st.Detail = fmt.Sprintf(i18n.T("上次启动的 cloudflared（PID %d）已退出，记录已清理", "the previously started cloudflared (PID %d) has exited; record cleaned up"), rec.PID)
 	case identityMismatch:
 		removeRecord(m.StateDir)
-		st.Detail = fmt.Sprintf("记录中的 PID %d 已被其他进程占用，记录已清理", rec.PID)
+		st.Detail = fmt.Sprintf(i18n.T("记录中的 PID %d 已被其他进程占用，记录已清理", "PID %d from the record now belongs to another process; record cleaned up"), rec.PID)
 	default:
 		st.State = StateUnknown
 		st.Err = verr
-		st.Detail = fmt.Sprintf("无法确认 PID %d 的身份", rec.PID)
+		st.Detail = fmt.Sprintf(i18n.T("无法确认 PID %d 的身份", "cannot confirm the identity of PID %d"), rec.PID)
 	}
 	return st
 }
@@ -245,7 +248,7 @@ func (m *Manager) Status(ctx context.Context) Status {
 		// Not "Configured": that asserts nothing is running, which the failed
 		// query did not establish.
 		st.State = StateUnknown
-		st.Detail = "未能确认是否存在非 slimproxy 启动的实例"
+		st.Detail = i18n.T("未能确认是否存在非 slimproxy 启动的实例", "could not confirm whether an instance not started by slimproxy exists")
 		if err != nil {
 			st.Err = err
 		}
@@ -255,8 +258,9 @@ func (m *Manager) Status(ctx context.Context) Status {
 		st.Connections = conn.Count
 		st.ConnectionsKnown = true
 		st.EdgeFakeIP = conn.FakeIP
-		st.Detail = fmt.Sprintf("有 %d 个活动连接，但不是由 slimproxy 启动的；"+
-			"tunnel down 无法停止它", conn.Count)
+		st.Detail = fmt.Sprintf(i18n.T(
+			"有 %d 个活动连接，但不是由 slimproxy 启动的；tunnel down 无法停止它",
+			"%d active connections, but not started by slimproxy; tunnel down cannot stop it"), conn.Count)
 	default:
 		st.Connections = 0
 		st.ConnectionsKnown = true
@@ -278,7 +282,7 @@ func (m *Manager) fillConnections(ctx context.Context, st *Status) {
 		st.ConnectionsErr = err
 		return
 	case !conn.Parsed:
-		st.ConnectionsErr = errors.New("cloudflared 输出无法解析，可能是版本差异")
+		st.ConnectionsErr = errors.New(i18n.T("cloudflared 输出无法解析，可能是版本差异", "cloudflared output could not be parsed; possibly a version difference"))
 		return
 	}
 	st.Connections = conn.Count
@@ -296,10 +300,10 @@ func (m *Manager) connectivity(ctx context.Context, id string) (Connectivity, er
 }
 
 // ErrAlreadyRunning is returned by Up when a managed tunnel is already up.
-var ErrAlreadyRunning = errors.New("隧道已在运行")
+var ErrAlreadyRunning = i18n.NewError("隧道已在运行", "the tunnel is already running")
 
 // ErrNotConfigured is returned when there is no cloudflared configuration.
-var ErrNotConfigured = errors.New("未找到 cloudflared 配置")
+var ErrNotConfigured = i18n.NewError("未找到 cloudflared 配置", "no cloudflared configuration found")
 
 // Up starts cloudflared.
 //
@@ -320,13 +324,13 @@ func (m *Manager) Up(ctx context.Context, detach bool, stdout, stderr *os.File) 
 		// Something else serves this tunnel. Not an error: cloudflared supports
 		// several connectors per tunnel as high availability. Proceed, but the
 		// caller must surface this.
-		st.Detail = "已有非 slimproxy 启动的实例在运行；将额外启动一个连接器（cloudflared 支持多连接器）"
+		st.Detail = i18n.T("已有非 slimproxy 启动的实例在运行；将额外启动一个连接器（cloudflared 支持多连接器）", "an instance not started by slimproxy is already running; starting an additional connector (cloudflared supports several)")
 	case StateUnknown:
 		// A failed *remote* query is not evidence that something is running,
 		// and refusing here would make a flaky link render the tunnel
 		// unstartable. A failed *local* read is different: st.TunnelID is then
 		// empty, which the guard below catches.
-		st.Detail = "未能确认是否已有实例在运行，仍继续启动"
+		st.Detail = i18n.T("未能确认是否已有实例在运行，仍继续启动", "could not confirm whether an instance is already running; starting anyway")
 	}
 
 	// Without this, a config that failed to parse yields an empty tunnel ID and
@@ -334,9 +338,9 @@ func (m *Manager) Up(ctx context.Context, detach bool, stdout, stderr *os.File) 
 	// file -- discarding the diagnosis this process already made.
 	if st.TunnelID == "" {
 		if st.Err != nil {
-			return st, fmt.Errorf("无法确定隧道 ID: %w", st.Err)
+			return st, fmt.Errorf(i18n.T("无法确定隧道 ID: %w", "cannot determine the tunnel ID: %w"), st.Err)
 		}
-		return st, errors.New("无法确定隧道 ID：cloudflared 配置中没有 tunnel 字段")
+		return st, errors.New(i18n.T("无法确定隧道 ID：cloudflared 配置中没有 tunnel 字段", "cannot determine the tunnel ID: the cloudflared config has no tunnel field"))
 	}
 
 	bin, err := m.resolveBinary()
@@ -355,7 +359,7 @@ func (m *Manager) Up(ctx context.Context, detach bool, stdout, stderr *os.File) 
 			if ctx.Err() != nil {
 				return st, nil // cancelled by the operator, not a failure
 			}
-			return st, fmt.Errorf("cloudflared 退出: %w", err)
+			return st, fmt.Errorf(i18n.T("cloudflared 退出: %w", "cloudflared exited: %w"), err)
 		}
 		return st, nil
 	}
@@ -394,7 +398,7 @@ func (m *Manager) startDetached(ctx context.Context, st Status, bin string) (Sta
 	detachProcess(cmd) // platform-specific: leave the terminal's signal group
 	if err := cmd.Start(); err != nil {
 		claimed = false
-		return st, fmt.Errorf("启动 cloudflared 失败: %w", err)
+		return st, fmt.Errorf(i18n.T("启动 cloudflared 失败: %w", "starting cloudflared failed: %w"), err)
 	}
 
 	rec := record{
@@ -411,10 +415,11 @@ func (m *Manager) startDetached(ctx context.Context, st Status, bin string) (Sta
 		claimed = false
 		reap(cmd)
 		if kerr := killAndConfirm(ctx, m, rec); kerr != nil {
-			return st, fmt.Errorf("无法写入 PID 记录（%w），且未能终止刚启动的 cloudflared（PID %d）：%v。"+
-				"请手动结束该进程", err, rec.PID, kerr)
+			return st, fmt.Errorf(i18n.T(
+				"无法写入 PID 记录（%w），且未能终止刚启动的 cloudflared（PID %d）：%v。请手动结束该进程",
+				"cannot write the PID record (%w), and terminating the cloudflared just started (PID %d) also failed: %v. End that process by hand"), err, rec.PID, kerr)
 		}
-		return st, fmt.Errorf("无法写入 PID 记录，已终止刚启动的 cloudflared: %w", err)
+		return st, fmt.Errorf(i18n.T("无法写入 PID 记录，已终止刚启动的 cloudflared: %w", "cannot write the PID record; the cloudflared just started has been terminated: %w"), err)
 	}
 
 	// cmd.Start only proves a process was created, and liveness alone is not
@@ -428,7 +433,9 @@ func (m *Manager) startDetached(ctx context.Context, st Status, bin string) (Sta
 		claimed = false
 		reap(cmd)
 		if kerr := killAndConfirm(ctx, m, rec); kerr != nil {
-			return st, fmt.Errorf("%w\n此外未能终止该进程（PID %d）：%v，请手动结束", err, rec.PID, kerr)
+			return st, fmt.Errorf(i18n.T(
+				"%w\n此外未能终止该进程（PID %d）：%v，请手动结束",
+				"%w\nadditionally, terminating the process (PID %d) failed: %v -- end it by hand"), err, rec.PID, kerr)
 		}
 		return st, err
 	}
@@ -467,14 +474,15 @@ func (m *Manager) confirmStarted(ctx context.Context, rec record, logStart int64
 		}
 
 		if id, _ := m.identityOf(rec); id == identityGone || id == identityMismatch {
-			return fmt.Errorf("cloudflared 启动后随即退出：\n%s", logTail(rec.LogPath, 12))
+			return fmt.Errorf(i18n.T("cloudflared 启动后随即退出：\n%s", "cloudflared exited immediately after starting:\n%s"), logTail(rec.LogPath, 12))
 		}
 		if logContains(rec.LogPath, connectedMarker, logStart) {
 			return nil
 		}
 	}
-	return fmt.Errorf("cloudflared 在 %s 内未能建立到 Cloudflare 的连接；"+
-		"进程仍在运行并重试，但隧道尚未可用：\n%s",
+	return fmt.Errorf(i18n.T(
+		"cloudflared 在 %s 内未能建立到 Cloudflare 的连接；进程仍在运行并重试，但隧道尚未可用：\n%s",
+		"cloudflared failed to establish a Cloudflare connection within %s; the process is still running and retrying, but the tunnel is not yet usable:\n%s"),
 		startupGrace, logTail(rec.LogPath, 12))
 }
 
@@ -518,7 +526,7 @@ func logContains(path, marker string, offset int64) bool {
 func logTail(path string, n int) string {
 	body, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Sprintf("（无法读取日志 %s: %v）", path, err)
+		return fmt.Sprintf(i18n.T("（无法读取日志 %s: %v）", "(cannot read log %s: %v)"), path, err)
 	}
 	lines := strings.Split(strings.TrimRight(string(body), "\r\n"), "\n")
 	if len(lines) > n {
@@ -534,7 +542,7 @@ func (m *Manager) openLog() (string, *os.File, int64, error) {
 		dir = "."
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", nil, 0, fmt.Errorf("创建状态目录失败: %w", err)
+		return "", nil, 0, fmt.Errorf(i18n.T("创建状态目录失败: %w", "creating the state directory failed: %w"), err)
 	}
 	// Absolute: a relative path recorded here would point somewhere else when
 	// status is run from another directory.
@@ -544,7 +552,7 @@ func (m *Manager) openLog() (string, *os.File, int64, error) {
 	}
 	f, err := os.OpenFile(abs, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return "", nil, 0, fmt.Errorf("打开日志文件失败: %w", err)
+		return "", nil, 0, fmt.Errorf(i18n.T("打开日志文件失败: %w", "opening the log file failed: %w"), err)
 	}
 
 	// Where this launch's output will begin. Appending keeps the history of
@@ -570,12 +578,12 @@ func (m *Manager) Down(ctx context.Context) (Status, error) {
 			// stopping from another is an easy and invisible way to land here,
 			// so the likely cause is named rather than left to be deduced from
 			// a message about a missing record.
-			return m.localStatus(), fmt.Errorf("在 %s 下没有找到由 slimproxy 启动的隧道记录。\n"+
-				"若当初是在别的目录用 -detach 启动的，请回到那个目录运行，"+
-				"或用 -state 指向记录所在目录；若 cloudflared 是手动启动的，请手动停止它",
+			return m.localStatus(), fmt.Errorf(i18n.T(
+				"在 %s 下没有找到由 slimproxy 启动的隧道记录。\n若当初是在别的目录用 -detach 启动的，请回到那个目录运行，或用 -state 指向记录所在目录；若 cloudflared 是手动启动的，请手动停止它",
+				"no tunnel record started by slimproxy found under %s.\nIf it was started with -detach from another directory, run from there or point -state at the record's directory; if cloudflared was started by hand, stop it by hand"),
 				m.stateDirOrDot())
 		}
-		return m.localStatus(), fmt.Errorf("%w；未终止任何进程，请检查该文件", err)
+		return m.localStatus(), fmt.Errorf(i18n.T("%w；未终止任何进程，请检查该文件", "%w; no process was terminated -- inspect that file"), err)
 	}
 
 	// Opened before verifying: on Windows this is an OpenProcess handle, and
@@ -596,22 +604,25 @@ func (m *Manager) Down(ctx context.Context) (Status, error) {
 		// Built before localStatus, whose reading is taken after the record is
 		// gone and therefore has nothing left to describe.
 		st := m.localStatus()
-		st.Detail = fmt.Sprintf("记录中的 cloudflared（PID %d）此前已自行退出，"+
-			"本次未终止任何进程；记录已清理", rec.PID)
+		st.Detail = fmt.Sprintf(i18n.T(
+			"记录中的 cloudflared（PID %d）此前已自行退出，本次未终止任何进程；记录已清理",
+			"the recorded cloudflared (PID %d) had already exited on its own; nothing was terminated this time and the record is cleaned up"), rec.PID)
 		return st, nil
 	case identityMismatch:
 		removeRecord(m.StateDir)
-		return m.localStatus(), fmt.Errorf("未终止任何进程：%w（记录已清理）", verr)
+		return m.localStatus(), fmt.Errorf(i18n.T("未终止任何进程：%w（记录已清理）", "no process was terminated: %w (record cleaned up)"), verr)
 	case identityUnknown:
-		return m.localStatus(), fmt.Errorf("无法确认 PID %d 的身份，拒绝终止以免杀错进程: %w",
+		return m.localStatus(), fmt.Errorf(i18n.T(
+			"无法确认 PID %d 的身份，拒绝终止以免杀错进程: %w",
+			"cannot confirm the identity of PID %d; refusing to terminate lest the wrong process be killed: %w"),
 			rec.PID, verr)
 	}
 
 	if ferr != nil {
-		return m.localStatus(), fmt.Errorf("无法获取进程 %d: %w", rec.PID, ferr)
+		return m.localStatus(), fmt.Errorf(i18n.T("无法获取进程 %d: %w", "cannot find process %d: %w"), rec.PID, ferr)
 	}
 	if err := proc.Kill(); err != nil {
-		return m.localStatus(), fmt.Errorf("终止 cloudflared（PID %d）失败: %w", rec.PID, err)
+		return m.localStatus(), fmt.Errorf(i18n.T("终止 cloudflared（PID %d）失败: %w", "terminating cloudflared (PID %d) failed: %w"), rec.PID, err)
 	}
 	if err := killAndConfirm(ctx, m, rec); err != nil {
 		return m.localStatus(), err
@@ -660,5 +671,5 @@ func killAndConfirm(ctx context.Context, m *Manager, rec record) error {
 		case <-time.After(150 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("已发送终止信号，但 PID %d 仍在运行", rec.PID)
+	return fmt.Errorf(i18n.T("已发送终止信号，但 PID %d 仍在运行", "termination signal sent, but PID %d is still running"), rec.PID)
 }

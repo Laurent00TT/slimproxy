@@ -13,6 +13,8 @@ import (
 	"github.com/gin-gonic/gin"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // setupLogging installs the logging configuration that CLIProxyAPI's own binary
@@ -109,7 +111,7 @@ func setupLogging(c *Config, opts ...logOption) (string, io.Closer, error) {
 	// sets an attribute -- the directory would keep its parent's inherited
 	// ACEs and pass them to everything created inside.
 	if rerr := fsperm.Restrict(dir); rerr != nil {
-		log.Warnf("slimproxy: 未能收紧日志目录 %s 的权限: %v", dir, rerr)
+		log.Warnf(i18n.T("slimproxy: 未能收紧日志目录 %s 的权限: %v", "slimproxy: could not tighten permissions on log directory %s: %v"), dir, rerr)
 	}
 
 	// Bounded by construction. CLIProxyAPI's own rotation keeps everything
@@ -168,21 +170,21 @@ const StrayStdoutName = "stray-stdout.log"
 // terminal. restore puts it back.
 func TakeStdout(logDir string) (real *os.File, restore func() error, err error) {
 	if strings.TrimSpace(logDir) == "" {
-		return nil, nil, errors.New("未指定日志目录，无法接管 stdout")
+		return nil, nil, errors.New(i18n.T("未指定日志目录，无法接管 stdout", "no log directory given, cannot take over stdout"))
 	}
 	if err = os.MkdirAll(logDir, 0o700); err != nil {
-		return nil, nil, fmt.Errorf("创建日志目录失败: %w", err)
+		return nil, nil, fmt.Errorf(i18n.T("创建日志目录失败: %w", "creating the log directory failed: %w"), err)
 	}
 	path := filepath.Join(logDir, StrayStdoutName)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return nil, nil, fmt.Errorf("打开 %s 失败: %w", path, err)
+		return nil, nil, fmt.Errorf(i18n.T("打开 %s 失败: %w", "opening %s failed: %w"), path, err)
 	}
 
 	// Third-party stdout can carry anything, including material the writer did
 	// not consider secret.
 	if rerr := fsperm.Restrict(path); rerr != nil {
-		log.Warnf("slimproxy: 未能收紧 %s 的权限: %v", path, rerr)
+		log.Warnf(i18n.T("slimproxy: 未能收紧 %s 的权限: %v", "slimproxy: could not tighten permissions on %s: %v"), path, rerr)
 	}
 
 	real = os.Stdout
@@ -205,13 +207,13 @@ func (nopCloser) Close() error { return nil }
 // to read the source to find their logs.
 func (c *Config) AppLogTarget() string {
 	if !c.LogToFile {
-		return "stdout（log-to-file 关闭）"
+		return i18n.T("stdout（log-to-file 关闭）", "stdout (log-to-file off)")
 	}
 	dir, err := c.resolvedLogDir()
 	if err != nil {
-		return "无法解析: " + err.Error()
+		return i18n.T("无法解析: ", "unresolvable: ") + err.Error()
 	}
-	return filepath.Join(dir, "slimproxy.log") + "（32MB × 5 轮转，压缩，同时输出到 stdout）"
+	return filepath.Join(dir, "slimproxy.log") + i18n.T("（32MB × 5 轮转，压缩，同时输出到 stdout）", " (32MB x 5 rotations, compressed, also written to stdout)")
 }
 
 // RequestLogTarget describes where request/response bodies land.
@@ -225,13 +227,13 @@ func (c *Config) AppLogTarget() string {
 // incident.
 func (c *Config) RequestLogTarget() string {
 	if !c.RequestLog {
-		return "关闭"
+		return i18n.T("关闭", "off")
 	}
 	dir, err := c.resolvedRequestLogDir()
 	if err != nil {
-		return "无法解析: " + err.Error()
+		return i18n.T("无法解析: ", "unresolvable: ") + err.Error()
 	}
-	return dir + "（未做总量上限；请求体与响应体逐字写入）"
+	return dir + i18n.T("（未做总量上限；请求体与响应体逐字写入）", " (no total size cap; request and response bodies written verbatim)")
 }
 
 // resolvedRequestLogDir returns where request/response body logs go.

@@ -12,6 +12,8 @@ import (
 	"github.com/gin-gonic/gin"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // refusalHooks restores information that the protocol translation throws away.
@@ -70,14 +72,14 @@ func (h *refusalHooks) NormalizeRequest(_ context.Context, _, _ sdktranslator.Fo
 // upstream that speaks a different dialect -- unchanged, and until now
 // silently. See untranslated.go.
 func (h *refusalHooks) TranslateRequest(_ context.Context, from, to sdktranslator.Format, _ string, body []byte, _ bool) ([]byte, bool) {
-	noteUntranslated(from, to, "请求")
+	noteUntranslated(from, to, i18n.T("请求", "request "))
 	return body, false
 }
 
 // TranslateResponse declines as well, under the same conditions and with the
 // same consequence in the other direction.
 func (h *refusalHooks) TranslateResponse(_ context.Context, from, to sdktranslator.Format, _ string, _, _, body []byte, _ bool) ([]byte, bool) {
-	noteUntranslated(from, to, "响应")
+	noteUntranslated(from, to, i18n.T("响应", "response "))
 	return body, false
 }
 
@@ -202,8 +204,9 @@ func (h *refusalHooks) track(key any) {
 		return true
 	})
 	h.live.Store(0)
-	log.Warnf("slimproxy: 待处理的上游拒绝记录超过 %d 条，已清空 %d 条。"+
-		"这说明有响应既没有正常结束也没有被清理——请报告此问题", maxPendingRefusals, count)
+	log.Warnf(i18n.T(
+		"slimproxy: 待处理的上游拒绝记录超过 %d 条，已清空 %d 条。这说明有响应既没有正常结束也没有被清理——请报告此问题",
+		"slimproxy: pending upstream refusal records exceeded %d; %d cleared. Some response neither finished normally nor was cleaned up -- please report this"), maxPendingRefusals, count)
 }
 
 // forget removes a finding that has been acted on.

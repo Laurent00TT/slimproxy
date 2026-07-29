@@ -8,6 +8,8 @@ import (
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // Detection of protocol pairs that have no translator.
@@ -49,9 +51,9 @@ func noteUntranslated(from, to sdktranslator.Format, direction string) {
 	if _, loaded := seenUntranslated.LoadOrStore(key, struct{}{}); loaded {
 		return
 	}
-	log.Warnf("slimproxy: 没有为 %s → %s 注册%s翻译器，报文将原样转发。"+
-		"上游会收到它不认识的格式，返回的错误看起来与协议无关。"+
-		"运行 \"slimproxy routes\" 查看本构建支持哪些组合",
+	log.Warnf(i18n.T(
+		"slimproxy: 没有为 %s → %s 注册%s翻译器，报文将原样转发。上游会收到它不认识的格式，返回的错误看起来与协议无关。运行 \"slimproxy routes\" 查看本构建支持哪些组合",
+		"slimproxy: no %[3]s translator registered for %[1]s → %[2]s; the payload is forwarded untouched. The upstream receives a format it does not recognise and its errors will look unrelated to the protocol. Run \"slimproxy routes\" to see which pairs this build supports"),
 		from, to, direction)
 }
 
@@ -78,6 +80,8 @@ func UntranslatedSummary() string {
 	if len(pairs) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%d 个协议组合没有翻译器，报文被原样转发: %s",
+	return fmt.Sprintf(i18n.T(
+		"%d 个协议组合没有翻译器，报文被原样转发: %s",
+		"%d protocol pairs have no translator; payloads forwarded untouched: %s"),
 		len(pairs), strings.Join(pairs, ", "))
 }

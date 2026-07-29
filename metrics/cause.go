@@ -1,6 +1,10 @@
 package metrics
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
+)
 
 // Cause is why a request failed, in the coarsest terms that still change what
 // an operator would do about it.
@@ -75,21 +79,21 @@ func TransportCauses() []Cause {
 func (c Cause) Display() string {
 	switch c {
 	case CauseDNS:
-		return "域名解析失败"
+		return i18n.T("域名解析失败", "DNS resolution failed")
 	case CauseConnect:
-		return "连接失败"
+		return i18n.T("连接失败", "connection failed")
 	case CauseTLS:
-		return "TLS 握手失败"
+		return i18n.T("TLS 握手失败", "TLS handshake failed")
 	case CauseTimeout:
-		return "超时"
+		return i18n.T("超时", "timed out")
 	case CauseCanceled:
-		return "客户端取消"
+		return i18n.T("客户端取消", "client canceled")
 	case CauseUpstream:
-		return "上游报错"
+		return i18n.T("上游报错", "upstream error")
 	case CauseOther:
-		return "其他"
+		return i18n.T("其他", "other")
 	default:
-		return "正常"
+		return i18n.T("正常", "ok")
 	}
 }
 

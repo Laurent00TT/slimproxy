@@ -25,6 +25,8 @@ import (
 	"strings"
 
 	cliproxyconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // Config is the whole knob set this proxy exposes. Everything absent from it
@@ -72,6 +74,17 @@ type Config struct {
 	// MaxRetryCredentials caps how many credentials one request may try.
 	// Zero means unlimited.
 	MaxRetryCredentials int `yaml:"max-retry-credentials"`
+
+	// Lang selects the interface language: "zh", "en", or empty to follow the
+	// system locale.
+	//
+	// A config field rather than a flag or environment variable, because the
+	// audience is "me and a few friends" sharing config files by chat: the file
+	// is the one artifact that travels, and a language that rides in it arrives
+	// set. Applied by the CLI at config load; this package never reads it
+	// itself, since by the time a Config exists the strings around it are
+	// already being selected.
+	Lang string `yaml:"lang"`
 
 	// Debug raises log verbosity.
 	Debug bool `yaml:"debug"`
@@ -155,9 +168,9 @@ type ConfigRow struct {
 func (c *Config) ConfigRows() []ConfigRow {
 	yesNo := func(b bool) string {
 		if b {
-			return "开启"
+			return i18n.T("开启", "on")
 		}
-		return "关闭"
+		return i18n.T("关闭", "off")
 	}
 	dash := func(s string) string {
 		if strings.TrimSpace(s) == "" {
@@ -165,21 +178,21 @@ func (c *Config) ConfigRows() []ConfigRow {
 		}
 		return s
 	}
-	models := "全部"
+	models := i18n.T("全部", "all")
 	if len(c.Models) > 0 {
-		models = fmt.Sprintf("%d 项白名单", len(c.Models))
+		models = fmt.Sprintf(i18n.T("%d 项白名单", "%d allow-listed"), len(c.Models))
 	}
 	retry := fmt.Sprint(c.RequestRetry)
 	if c.RequestRetry == 0 {
-		retry = "0（重试循环关闭）"
+		retry = i18n.T("0（重试循环关闭）", "0 (retry loop off)")
 	}
-	creds := "不限"
+	creds := i18n.T("不限", "unlimited")
 	if c.MaxRetryCredentials > 0 {
 		creds = fmt.Sprint(c.MaxRetryCredentials)
 	}
-	auth := fmt.Sprintf("%d 已配置", len(c.APIKeys))
+	auth := fmt.Sprintf(i18n.T("%d 已配置", "%d configured"), len(c.APIKeys))
 	if len(c.APIKeys) == 0 {
-		auth = "无（放行一切）"
+		auth = i18n.T("无（放行一切）", "none (everything admitted)")
 	}
 
 	return []ConfigRow{
@@ -193,7 +206,7 @@ func (c *Config) ConfigRows() []ConfigRow {
 		{K: "max-retry-interval", V: fmt.Sprintf("%d s", c.MaxRetryInterval)},
 		{K: "max-retry-credentials", V: creds},
 		{K: "models", V: models},
-		{K: "management api", V: "已禁用", Warn: true},
+		{K: "management api", V: i18n.T("已禁用", "disabled"), Warn: true},
 		{K: "plugin host", V: "已禁用", Warn: true},
 	}
 }
@@ -239,6 +252,12 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(k) == "" {
 			errs = append(errs, fmt.Errorf("APIKeys[%d] is blank", i))
 		}
+	}
+	if c.Lang != "" && c.Lang != "zh" && c.Lang != "en" {
+		// Validated here so i18n.Parse can stay error-free: a bad value dies at
+		// startup with this message, so every later Parse call sees input this
+		// has already ruled on.
+		errs = append(errs, fmt.Errorf("lang %q unknown: use \"zh\", \"en\", or leave it out to follow the system locale", c.Lang))
 	}
 	if c.RequestRetry < 0 {
 		errs = append(errs, errors.New("RequestRetry must not be negative"))

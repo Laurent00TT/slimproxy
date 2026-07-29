@@ -7,6 +7,8 @@ import (
 	"os"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // restrict replaces the object's DACL with one granting only the current user,
@@ -46,7 +48,7 @@ func restrict(path string) error {
 	// pre-existing survives.
 	acl, err := windows.ACLFromEntries(access, nil)
 	if err != nil {
-		return fmt.Errorf("构造访问控制列表失败: %w", err)
+		return fmt.Errorf(i18n.T("构造访问控制列表失败: %w", "building the access control list failed: %w"), err)
 	}
 
 	err = windows.SetNamedSecurityInfo(
@@ -56,7 +58,7 @@ func restrict(path string) error {
 		nil, nil, acl, nil,
 	)
 	if err != nil {
-		return fmt.Errorf("设置 %s 的访问控制失败: %w", path, err)
+		return fmt.Errorf(i18n.T("设置 %s 的访问控制失败: %w", "setting access control on %s failed: %w"), path, err)
 	}
 	return nil
 }
@@ -66,7 +68,7 @@ func currentUserSID() (*windows.SID, error) {
 	token := windows.GetCurrentProcessToken()
 	user, err := token.GetTokenUser()
 	if err != nil {
-		return nil, fmt.Errorf("无法获取当前用户身份: %w", err)
+		return nil, fmt.Errorf(i18n.T("无法获取当前用户身份: %w", "cannot determine the current user identity: %w"), err)
 	}
 	return user.User.Sid, nil
 }

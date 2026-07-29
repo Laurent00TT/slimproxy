@@ -3,6 +3,8 @@ package proxy
 import (
 	"github.com/gin-gonic/gin"
 	log "github.com/sirupsen/logrus"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // Who is allowed to tell this proxy where a request came from.
@@ -70,8 +72,9 @@ func configureTrustedProxies(engine *gin.Engine) error {
 func engineConfigurator() func(*gin.Engine) {
 	return func(engine *gin.Engine) {
 		if err := configureTrustedProxies(engine); err != nil {
-			log.Errorf("slimproxy: 无法收窄可信代理范围，访问日志中的客户端 IP "+
-				"将保持可被请求方伪造的状态（gin 默认信任 0.0.0.0/0）: %v", err)
+			log.Errorf(i18n.T(
+				"slimproxy: 无法收窄可信代理范围，访问日志中的客户端 IP 将保持可被请求方伪造的状态（gin 默认信任 0.0.0.0/0）: %v",
+				"slimproxy: cannot narrow the trusted-proxy range; the client IP in the access log remains forgeable by the requester (gin trusts 0.0.0.0/0 by default): %v"), err)
 		}
 	}
 }

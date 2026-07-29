@@ -6,6 +6,8 @@ import (
 	"net"
 	"os/exec"
 	"strings"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // fakeIPNet is RFC 2544 benchmark space, 198.18.0.0/15.
@@ -88,7 +90,7 @@ func (m *Manager) queryConnectivity(ctx context.Context, tunnelID string) (Conne
 		if line := firstLine(text); line != "" {
 			detail += "（" + line + "）"
 		}
-		return Connectivity{}, fmt.Errorf("查询失败: %s。该查询需要网络和 cert.pem", detail)
+		return Connectivity{}, fmt.Errorf(i18n.T("查询失败: %s。该查询需要网络和 cert.pem", "query failed: %s. This query needs network access and cert.pem"), detail)
 	}
 	return ParseTunnelInfo(text), nil
 }

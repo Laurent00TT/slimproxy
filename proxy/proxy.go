@@ -26,6 +26,8 @@ import (
 
 	// Registers the built-in translator pairs.
 	_ "github.com/Laurent00TT/slimproxy/translate"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // EffectiveConfigName returns the file this instance materializes its resolved
@@ -186,7 +188,7 @@ func keepRefusalHooksInstalled(ctx context.Context) {
 		case <-ticker.C:
 		}
 		if err := installRefusalHooks(); err != nil {
-			log.Warnf("slimproxy: 重新安装 refusal hook 失败，上游策略拒绝可能表现为空响应: %v", err)
+			log.Warnf(i18n.T("slimproxy: 重新安装 refusal hook 失败，上游策略拒绝可能表现为空响应: %v", "slimproxy: reinstalling the refusal hook failed; upstream policy refusals may appear as empty responses: %v"), err)
 			return
 		}
 	}
@@ -246,10 +248,9 @@ func (r *Runtime) guardInboundAuth(ctx context.Context, stop context.CancelFunc)
 			continue
 		}
 
-		log.Errorf("slimproxy: %s 中的 api-keys 已变为空。"+
-			"上游会据此注销唯一的入站认证提供者，之后每个请求都会被放行——"+
-			"而这个进程持有可用的上游凭据。正在停止服务。\n"+
-			"若这是另一个 slimproxy 实例覆盖了该文件，请给它单独的 -state 目录后重试。",
+		log.Errorf(i18n.T(
+			"slimproxy: %s 中的 api-keys 已变为空。上游会据此注销唯一的入站认证提供者，之后每个请求都会被放行——而这个进程持有可用的上游凭据。正在停止服务。\n若这是另一个 slimproxy 实例覆盖了该文件，请给它单独的 -state 目录后重试。",
+			"slimproxy: api-keys in %s has become empty. Upstream deregisters the only inbound auth provider on that, after which every request is admitted -- while this process holds usable upstream credentials. Stopping the service.\nIf another slimproxy instance overwrote the file, give it its own -state directory and retry."),
 			r.ConfigPath)
 		stop()
 		return
@@ -339,13 +340,13 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 				// request log that cannot be written produces no output and no
 				// complaint -- while `check` prints the path as though it were
 				// working.
-				return nil, fmt.Errorf("slimproxy: request-log 目录 %q 无法创建: %w", dir, err)
+				return nil, fmt.Errorf(i18n.T("slimproxy: request-log 目录 %q 无法创建: %w", "slimproxy: request-log directory %q cannot be created: %w"), dir, err)
 			}
 			tighten(dir)
 			if err := probeWritable(dir); err != nil {
-				return nil, fmt.Errorf("slimproxy: request-log 目录 %q 不可写: %w\n"+
-					"上游的请求日志中间件会丢弃写入错误，所以这必须在启动时拦下——"+
-					"否则代理会正常运行但一个字节都不记录", dir, err)
+				return nil, fmt.Errorf(i18n.T(
+					"slimproxy: request-log 目录 %q 不可写: %w\n上游的请求日志中间件会丢弃写入错误，所以这必须在启动时拦下——否则代理会正常运行但一个字节都不记录",
+					"slimproxy: request-log directory %q is not writable: %w\nupstream's request-log middleware discards write errors, so this has to be caught at startup -- otherwise the proxy runs normally and records not one byte"), dir, err)
 			}
 		case statErr == nil:
 			tighten(dir)
@@ -408,7 +409,7 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 	// worked there and nowhere else, and the resulting gap in the record reads
 	// exactly like a quiet period rather than like a feature that never ran.
 	if jdir, jderr := c.resolvedJournalDir(); jderr != nil {
-		log.Warnf("slimproxy: 无法解析事件日志目录，本次运行不会记录可回溯事件: %v", jderr)
+		log.Warnf(i18n.T("slimproxy: 无法解析事件日志目录，本次运行不会记录可回溯事件: %v", "slimproxy: cannot resolve the event journal directory; this run will record no reviewable events: %v"), jderr)
 	} else if jdir != "" {
 		jw, jerr := journal.Open(jdir, c.JournalDays)
 		switch {
@@ -417,7 +418,7 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 			// diary is worse than one that serves and says the diary is
 			// missing -- but it must say so, or the absence of events later
 			// reads as an absence of problems.
-			log.Warnf("slimproxy: 无法打开事件日志，本次运行不会记录可回溯事件: %v", jerr)
+			log.Warnf(i18n.T("slimproxy: 无法打开事件日志，本次运行不会记录可回溯事件: %v", "slimproxy: cannot open the event journal; this run will record no reviewable events: %v"), jerr)
 		default:
 			rt.Journal = jw
 			// Completed requests arrive through the collector, so the field
@@ -555,16 +556,16 @@ func ensureCanBind(addr string) error {
 		// No "slimproxy:" prefix -- main already adds one, and this message is
 		// the most common startup failure there is, so a doubled prefix would
 		// be the thing operators see most often.
-		return fmt.Errorf("无法绑定 %s：%w\n"+
-			"很可能已有一个 slimproxy 在运行。用 \"slimproxy status\" 查看，"+
-			"停掉它，或用 -port 换一个端口", addr, err)
+		return fmt.Errorf(i18n.T(
+			"无法绑定 %s：%w\n很可能已有一个 slimproxy 在运行。用 \"slimproxy status\" 查看，停掉它，或用 -port 换一个端口",
+			"cannot bind %s: %w\nmost likely another slimproxy is already running. Check with \"slimproxy status\", stop it, or pick another port with -port"), addr, err)
 	}
 	return ln.Close()
 }
 
 func tighten(path string) {
 	if err := fsperm.Restrict(path); err != nil {
-		log.Warnf("slimproxy: 未能收紧 %s 的访问权限（本机其他用户可能可读）: %v", path, err)
+		log.Warnf(i18n.T("slimproxy: 未能收紧 %s 的访问权限（本机其他用户可能可读）: %v", "slimproxy: could not tighten access on %s (other local users may be able to read it): %v"), path, err)
 	}
 }
 

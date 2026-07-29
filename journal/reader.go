@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Laurent00TT/slimproxy/i18n"
 )
 
 // Query selects events to read back.
@@ -132,7 +134,9 @@ func Read(dir string, q Query) (Result, error) {
 	days, err := Days(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return res, fmt.Errorf("还没有事件日志目录 %s；代理运行一段时间后才会有记录", dir)
+			return res, fmt.Errorf(i18n.T(
+				"还没有事件日志目录 %s；代理运行一段时间后才会有记录",
+				"no event journal directory %s yet; records appear after the proxy has run for a while"), dir)
 		}
 		return res, err
 	}
