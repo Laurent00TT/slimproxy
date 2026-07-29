@@ -10,6 +10,11 @@ following classes of bug security-relevant, not just incorrect:
 - Anything that writes credential material, request bodies, or tokens to a
   location the documentation does not name as secret.
 - Anything that widens what the tunnel exposes beyond the API surface.
+- Anything that widens which relays may state a request's origin. gin trusts
+  every proxy by default, which makes the logged client IP caller-supplied;
+  `proxy/trustedproxy.go` narrows that to loopback, and widening it again
+  without a reason is a regression even though nothing authenticates on that
+  value today.
 - Anything that puts local network or host detail into a response body. The
   upstream SDK builds failure responses from the Go error's text, so a dial
   failure will carry an address and a platform-specific syscall name unless

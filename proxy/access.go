@@ -40,29 +40,37 @@ func AccessJournalMiddleware(folder *journal.RejectFolder) gin.HandlerFunc {
 
 // requestSource classifies where a request entered from.
 //
-// Cf-Connecting-Ip decides it, not RemoteAddr, and that is not a shortcut:
-// cloudflared connects back to 127.0.0.1, so as far as RemoteAddr is concerned
-// every request from the public internet is a local one. Without reading the
-// header, "local" and "tunnel" would be indistinguishable and the split would
-// be worthless.
+// RemoteAddr is consulted first and the header only afterwards. The order is
+// the substance: cloudflared runs on this machine and connects back to
+// 127.0.0.1, so a tunnelled request is indistinguishable from a local one by
+// address alone and Cf-Connecting-Ip is the only thing that separates them --
+// but a connection that did not come from loopback did not come through the
+// tunnel, whatever headers it carries. Reading the header first, as this did,
+// meant a direct caller could hand over one header and be filed as tunnel
+// traffic; on a proxy listening on 0.0.0.0 that was open to the entire network.
 //
-// The header is trivially forgeable by anything that can already reach the
-// port. That is acceptable here and nowhere else: this classifies a log line.
-// Nothing in this program makes an authorisation decision from it, and nothing
-// should -- inbound authorisation is api-keys, checked upstream of this.
+// What remains forgeable is a process on this machine claiming to be tunnel
+// traffic, which loopback having to be trusted makes unavoidable -- see the
+// commentary in trustedproxy.go, which narrows the same trust for the client
+// IP that upstream's access log records.
+//
+// Still only a log line either way. Nothing in this program makes an
+// authorisation decision from it, and nothing should -- inbound authorisation
+// is api-keys, checked upstream of this.
 func requestSource(r *http.Request) journal.Source {
 	if r == nil {
 		return journal.SourceRemote
-	}
-	if strings.TrimSpace(r.Header.Get("Cf-Connecting-Ip")) != "" {
-		return journal.SourceTunnel
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil && ip.IsLoopback() {
-		return journal.SourceLocal
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil || !ip.IsLoopback() {
+		return journal.SourceRemote
 	}
-	return journal.SourceRemote
+	if strings.TrimSpace(r.Header.Get("Cf-Connecting-Ip")) != "" {
+		return journal.SourceTunnel
+	}
+	return journal.SourceLocal
 }
