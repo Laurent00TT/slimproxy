@@ -1,5 +1,7 @@
 # slimproxy
 
+**English** | [中文](README.zh-CN.md)
+
 **Use one LLM subscription from every tool that speaks a different API.**
 
 Point an OpenAI-compatible editor plugin, a Gemini-format script, and Claude Code
@@ -8,25 +10,26 @@ runs on `127.0.0.1`, translates between the dialects, and shows you what is
 actually happening while it does.
 
 ```
-┌─ slimproxy 0.1.0 ──────────────────────────────────────────┐
-│ 监听 127.0.0.1:8317  运行 4h12m  rpm 17  ttft 842ms        │
-├────────────────────────────────────────────────────────────┤
-│ 隧道  proxy.example.com         ● 2 连接                   │
-│ 凭据  claude · user@example.com ● 7h24m 后过期             │
-│ 诊断  PASS 4 · WARN 1           ▲ 3m12s前                  │
-├─ 活跃路由 ─────────────────────────────────────────────────┤
-│ openai → claude                        41    812ms     68% │
-├─ 最近请求 ─────────────────────────────────────────────────┤
-│ 12:41:07 ok  openai → claude  opus-5        812ms     1.9k │
-└────────────────────────────────────────────────────────────┘
-   tunnel down    停止本进程启动的 cloudflared
-     当前 2 连接 · 停止后 proxy.example.com 立即不可达
+┌─ slimproxy 0.1.0 ──────────────────────────────────────────────────┐
+│ listen 127.0.0.1:8317  up 4h12m  rpm 17  ttft 842ms  quota 21% ↗   │
+├────────────────────────────────────────────────────────────────────┤
+│ tunnel  proxy.example.com         ● 2 connections                  │
+│ creds   claude · user@example.com ● 7h24m until expiry             │
+│ doctor  PASS 4 · WARN 1           ▲ 3m12s ago                      │
+├─ active routes ────────────────────────────────────────────────────┤
+│ openai → claude                              41    812ms      68%  │
+├─ recent requests · 1 in flight ────────────────────────────────────┤
+│ 12:41:12 ▸    /v1/messages                        8.4s          —  │
+│ 12:41:07 ok   openai → claude   opus-5           812ms       1.9k  │
+└────────────────────────────────────────────────────────────────────┘
+   tunnel down    stop the cloudflared this process started
+     2 connections now · after stopping, proxy.example.com becomes unreachable
  › /tunnel d
 ```
 
 The protocol emulation is [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)'s,
 used exactly as it ships. What slimproxy adds is everything around it: a
-16-key config instead of ~200, fail-closed auth, a terminal dashboard, tunnel
+17-key config instead of ~200, fail-closed auth, a terminal dashboard, tunnel
 lifecycle management, and diagnostics that refuse to call an unanswered
 question healthy.
 
@@ -66,6 +69,9 @@ arguments serves — and, on a terminal, opens the dashboard above.
 
 Point your client at `http://127.0.0.1:8317/v1` with the generated key as the
 bearer token, and you are done.
+
+The interface speaks Chinese and English: it follows the system locale by
+default, and a `lang: zh` / `lang: en` line in the config pins it.
 
 ## Commands
 
@@ -147,14 +153,14 @@ Found a security issue? See [SECURITY.md](SECURITY.md).
 
 | | |
 |---|---|
-| [docs/GUIDE.md](docs/GUIDE.md) | 使用指南。从零开始，每个命令什么时候用、输出怎么读、出问题怎么查。 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构剖析。每个设计决定在什么约束下做出，以及改哪里会出事。 |
-| [deploy/TUNNEL.md](deploy/TUNNEL.md) | Cloudflare Tunnel 的一次性配置（把本机端口暴露到外网）。 |
+| [docs/GUIDE.md](docs/GUIDE.md) | User guide (Chinese). From zero: when to use each command, how to read the output, what to check when something breaks. |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Architecture deep-dive (Chinese). The constraints behind each design decision, and what breaks if you change it. |
+| [deploy/TUNNEL.md](deploy/TUNNEL.md) | One-time Cloudflare Tunnel setup (English). Exposes the local port to the internet. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Build, test, and what a change needs to carry. |
 
-Most documentation and all CLI output is in Chinese; this README and TUNNEL.md
-are in English. That split is deliberate — the CLI's audience is the author's
-circle first — but contributions translating either direction are welcome.
+The CLI itself is bilingual — see `lang` above. The long-form guides are
+Chinese-first because the tool's first audience was the author's circle;
+contributions translating either direction are welcome.
 
 ## Package map
 
@@ -165,8 +171,9 @@ circle first — but contributions translating either direction are welcome.
 | `diag/` | Deployment diagnostics. Never reports an unanswered question as healthy. |
 | `tunnel/` | Operates the cloudflared child process: three-state status, start, stop. |
 | `credentials/` | Inspects and manages the upstream OAuth credential pool. |
-| `metrics/` | Completed-request telemetry, read in-process by the dashboard. |
+| `metrics/` | Request telemetry — completed and in-flight — read in-process by the dashboard. |
 | `journal/` | Structured event stream: one JSON object per request and per state change. |
+| `i18n/` | Interface language selection. Inline bilingual strings, guarded by an AST lint test. |
 | `translate/` | Typed, fail-loud facade over `sdk/translator`. Usable on its own — 14 indirect dependencies. **Not on the serving path**: CLIProxyAPI's executors call `sdktranslator` directly, so the guard for that path lives in `proxy/untranslated.go`. |
 | `fsperm/` | Restricts sensitive paths to the current user. On Windows the permission bits are not access control. |
 | `cmd/slimproxy` | CLI: `serve`, `check`, `init`, `status`, `doctor`, `auth`, `tunnel`, `routes`, `log`, `test`, `version`, `help`. |
@@ -179,7 +186,7 @@ worth knowing before something surprises you.
 
 ## What "slim" does and does not mean
 
-**Does**: the configuration and runtime surface. One config file with 16 keys instead of
+**Does**: the configuration and runtime surface. One config file with 17 keys instead of
 ~200. No management API, no control panel, no plugin host, no pprof, no Redis usage queue.
 Unknown config keys are errors, not silently ignored. Inbound auth is fail-*closed*.
 
@@ -199,10 +206,15 @@ modifies, extends, or hardens it.
 There is no HTTP surface behind it: the panel reads the collector in memory and
 calls the same functions the subcommands do.
 
-Press `/` for commands: `tunnel status|up|down`, `auth list|rm`, `doctor`,
-`routes`, `quit`. The panel above the prompt never reflows — the completion list
-grows downward from outside the frame, so the state you are reading stays put
-while you type.
+The header carries the two numbers that decide anything on a subscription: the
+five-hour quota window (with a direction arrow) and the prompt-cache hit rate —
+the one metric that is invisible when it breaks, because replies stay normal
+while quota burns at full price.
+
+Press `/` for commands: `monitor`, `tunnel status|up|down`, `auth list|rm`,
+`doctor`, `routes`, `quit`. The panel above the prompt never reflows — the
+completion list grows downward from outside the frame, so the state you are
+reading stays put while you type.
 
 **Destructive commands state the cost before you press Enter.** `tunnel down`
 does not say "stop the tunnel", it says how many edge connections are live and
@@ -222,15 +234,17 @@ which hostnames stop answering. Then it asks y/n.
   unregisters the only inbound auth provider — after which `AuthMiddleware`
   calls `c.Next()` for every request, turning a process holding live OAuth
   subscriptions into an open relay. `init` covers the actual need.
-- **The 诊断 row is the last `doctor` verdict, not a live upstream probe.** A
+- **The doctor row is the last `doctor` verdict, not a live upstream probe.** A
   real probe costs a DNS lookup and a TLS handshake per refresh. Showing a
   timestamped real answer beats inventing a fresh-looking one.
 
 ### Other things to know
 
-- **"Recent requests", not "live streams".** `usage.Record` is published when a
-  request finishes, so an in-flight stream is not observable through the SDK's
-  usage interface. The panel reports completions.
+- **In-flight requests are rows, not just a count.** A completed request's
+  telemetry comes from the SDK's usage record, which does not exist until the
+  upstream answers — so a middleware tracks arrivals separately, and a running
+  request shows as a `▸` row whose elapsed time counts up. When the upstream
+  answers, the row becomes a normal one in place.
 - **Redirected output falls back to line logging.** `slimproxy > log 2>&1` under
   a service manager gets the original behaviour; the panel only starts when both
   stdin and stdout are terminals. `-no-tui` forces it off on a terminal.

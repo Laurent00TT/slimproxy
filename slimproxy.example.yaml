@@ -56,6 +56,10 @@ debug: false
 request-log: false
 log-to-file: false
 
+# Interface language: "zh", "en", or empty to follow the system locale.
+# Covers the panel, command output, diagnostics and error messages.
+lang: ""
+
 # Where file logs go when log-to-file is on (or forced on by panel mode).
 # Empty means "logs" under the working directory.
 log-dir: ""
