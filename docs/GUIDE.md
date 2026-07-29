@@ -719,13 +719,28 @@ dial tcp 198.18.0.42:443: connectex: A connection attempt failed because...
 | `upstream unreachable: connection failed` | 连不上（拒绝／超时／路由不通） |
 | `upstream unreachable: tls handshake failed` | TLS 握手失败 |
 | `upstream timeout` | 超时 |
+| `request canceled` | 客户端在拿到答复前断开了 |
 | `upstream unavailable` | 502／503 |
 
-**完整原文没有丢**，只是不再发给调用方——它照常写进应用日志和事件流：
+**完整原文没有丢**，只是不再发给调用方——它照常写进应用日志：
 
 ```bash
-slimproxy.exe log -status 500 -n 20
+slimproxy.exe log -failed -n 20
 ```
+
+事件流里记的是**归类**而不是原文（原文是响应正文，事件流不存正文）。
+`slimproxy log` 的状态列在没有 HTTP 状态码时显示这个归类：
+
+```
+时间              状态      路由             模型            首字   总时长
+07-29 14:02:11   connect  claude@you...    sonnet-4        —      35.2s
+07-29 14:02:47   dns      claude@you...    sonnet-4        —      1.1s
+07-29 14:03:05   429      claude@you...    sonnet-4        —      0.3s
+```
+
+`connect` / `dns` / `tls` / `timeout` / `canceled` 这几个值只在**没有状态码**时出现——
+传输层的失败根本到不了上游，也就没有 HTTP 状态码可记。以前这一列在这种情况下
+一律显示 `err`，等于什么都没说。
 
 上游 Anthropic 自己返回的错误（限流详情、参数错误、overloaded）**原样透传**，
 不受影响——那些是调用方需要的信息。

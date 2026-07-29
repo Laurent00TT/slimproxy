@@ -285,6 +285,10 @@ func FromSample(s metrics.Sample) Event {
 	}
 	if s.Failed {
 		e.Status = s.Status
+		// Recorded even when a status is present: the two answer different
+		// questions, and "upstream" next to a 429 is what distinguishes a
+		// refusal that arrived from one that never got that far.
+		e.Cause = s.Cause
 	}
 	if s.TTFT > 0 {
 		e.TTFTMs = s.TTFT.Milliseconds()

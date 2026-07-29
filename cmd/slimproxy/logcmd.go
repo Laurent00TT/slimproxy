@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Laurent00TT/slimproxy/journal"
+	"github.com/Laurent00TT/slimproxy/metrics"
 )
 
 // cmdLog queries the event journal.
@@ -174,12 +175,22 @@ func writeJournalSummary(cx *cliContext, s journal.Summary, since time.Duration)
 	}
 }
 
+// requestStatus renders the status column.
+//
+// The cause fallback is the point of the column existing. A transport failure
+// carries no HTTP status, so this printed a bare "err" for the largest category
+// of failure in the file -- and a week of "err" answers nothing, which is the
+// opposite of what the journal is for. A status code is preferred when there is
+// one: it is more specific, and Cause is only ever "upstream" beside it.
 func requestStatus(e journal.Event) string {
 	if e.OK != nil && *e.OK {
 		return "ok"
 	}
 	if e.Status > 0 {
 		return fmt.Sprint(e.Status)
+	}
+	if e.Cause != "" && e.Cause != metrics.CauseOther {
+		return string(e.Cause)
 	}
 	return "err"
 }

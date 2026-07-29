@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/Laurent00TT/slimproxy/metrics"
 )
 
 // The error envelope: what a caller is told when a request fails.
@@ -319,24 +321,25 @@ func errorTypeFor(status int) string {
 
 // classifyFailure turns the discarded original into one of a fixed set of lines.
 //
-// Matching is on the Go standard library's own wording, which is stable across
-// releases and identical on every platform for these cases -- the platform-
-// specific part ("connectex" versus "connect:") is exactly what is being
-// dropped, so it is matched loosely and never echoed.
+// The classification itself is metrics.CauseFromText, the same table the
+// journal records against. Two separate lists would drift, and then a caller
+// told "tls handshake failed" could find "connect" in the journal for the same
+// request -- with only the operator's memory to say which one lied.
+//
+// CauseFromText rather than CauseFrom because the status here is not evidence:
+// the SDK stamps 500 on a locally built failure, so consulting it would
+// classify every transport failure as "upstream".
 func classifyFailure(status int, original string) string {
-	s := strings.ToLower(original)
-	switch {
-	case strings.Contains(s, "no such host"), strings.Contains(s, "dns"):
+	switch metrics.CauseFromText(original) {
+	case metrics.CauseDNS:
 		return "upstream unreachable: dns resolution failed"
-	case strings.Contains(s, "tls"), strings.Contains(s, "certificate"),
-		strings.Contains(s, "x509"):
+	case metrics.CauseTLS:
 		return "upstream unreachable: tls handshake failed"
-	case strings.Contains(s, "timeout"), strings.Contains(s, "deadline exceeded"),
-		strings.Contains(s, "timed out"):
+	case metrics.CauseTimeout:
 		return "upstream timeout"
-	case strings.Contains(s, "refused"), strings.Contains(s, "connectex"),
-		strings.Contains(s, "dial "), strings.Contains(s, "connect:"),
-		strings.Contains(s, "network is unreachable"), strings.Contains(s, "reset by peer"):
+	case metrics.CauseCanceled:
+		return "request canceled"
+	case metrics.CauseConnect:
 		return "upstream unreachable: connection failed"
 	}
 	// No recognised transport wording. Still replaced -- deny-by-default is the

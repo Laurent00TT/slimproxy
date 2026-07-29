@@ -60,6 +60,14 @@ type Sample struct {
 	// the one distinction this proxy exists to manage.
 	Status int
 
+	// Cause says why it failed, for the failures Status cannot describe.
+	//
+	// A transport failure never receives an HTTP status, so Status is zero for
+	// exactly the cases that are hardest to diagnose -- which is how 108 of 110
+	// recorded failures came to carry no reason at all. Derived from
+	// Record.Fail.Body and deliberately not the text itself; see Cause.
+	Cause Cause
+
 	// Latency is the whole request, where TTFT is only its first token. Both
 	// matter and they fail differently: a slow first token is the upstream
 	// thinking, a slow total with a fast first token is a long generation.
@@ -220,10 +228,25 @@ func SampleFrom(r cliproxyusage.Record) Sample {
 		CacheCreation: r.Detail.CacheCreationTokens,
 		Failed:        r.Failed,
 		Status:        r.Fail.StatusCode,
+		Cause:         causeOf(r),
 		Auth:          r.AuthID,
 		Executor:      r.ExecutorType,
 		Quota5h:       quotaFromHeaders(r.ResponseHeaders),
 	}
+}
+
+// causeOf classifies a record's failure, and says nothing about a success.
+//
+// Reads Fail.Body, which upstream fills with the Go error's verbatim text
+// (internal/runtime/executor/helps/usage_helpers.go, failFromErrors). That text
+// is the only description a transport failure ever produces, and it is also
+// full of local addresses -- so it is classified here and does not travel any
+// further.
+func causeOf(r cliproxyusage.Record) Cause {
+	if !r.Failed {
+		return CauseNone
+	}
+	return CauseFrom(r.Fail.StatusCode, r.Fail.Body)
 }
 
 // prune drops samples older than the window. Called under mu.

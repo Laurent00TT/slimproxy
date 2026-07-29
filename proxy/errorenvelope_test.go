@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/Laurent00TT/slimproxy/metrics"
 )
 
 func init() { gin.SetMode(gin.TestMode) }
@@ -337,16 +339,11 @@ func TestGuideDocumentsEveryCategory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取指南失败: %v", err)
 	}
-	// Every transport wording classifyFailure recognises, and what it yields.
-	samples := []string{
-		"lookup api.anthropic.com: no such host",
-		"net/http: TLS handshake timeout",
-		"dial tcp: connection refused",
-		"context deadline exceeded",
-	}
+	// Driven off TransportCauses rather than a hand-kept list, so a cause added
+	// later cannot reach callers without an entry in the table they consult.
 	seen := map[string]bool{}
-	for _, s := range samples {
-		seen[classifyFailure(http.StatusInternalServerError, s)] = true
+	for _, cause := range metrics.TransportCauses() {
+		seen[classifyFailure(http.StatusInternalServerError, sampleTextFor(t, cause))] = true
 	}
 	seen[classifyFailure(http.StatusServiceUnavailable, "")] = true
 
@@ -356,6 +353,56 @@ func TestGuideDocumentsEveryCategory(t *testing.T) {
 				"用户看到它时查不到含义", msg)
 		}
 	}
+}
+
+// TestEveryTransportCauseHasCallerWording.
+//
+// The caller-facing wording and the journal's `cause` column are two renderings
+// of one classification, and they used to be two independent lists of string
+// matches. Adding a cause to metrics without giving it wording here would drop
+// it silently into the status-code fallback -- a caller would be told
+// "upstream request failed" for a failure the journal names precisely, and
+// nobody would notice until the two were compared during an incident.
+func TestEveryTransportCauseHasCallerWording(t *testing.T) {
+	// What the fallback produces for a 500, i.e. "nothing specific was said".
+	generic := classifyFailure(http.StatusInternalServerError, "")
+
+	for _, cause := range metrics.TransportCauses() {
+		t.Run(string(cause), func(t *testing.T) {
+			sample := sampleTextFor(t, cause)
+			got := classifyFailure(http.StatusInternalServerError, sample)
+			if got == generic {
+				t.Errorf("cause %q 落进了兜底文案 %q：新增的失败类别没有对应的对客文案",
+					cause, got)
+			}
+			if ipLiteral.MatchString(got) {
+				t.Errorf("cause %q 的文案 %q 含 IP 字面量", cause, got)
+			}
+		})
+	}
+}
+
+// sampleTextFor produces an error text that classifies as the given cause, so
+// the wording check above exercises the real path rather than a stub.
+func sampleTextFor(t *testing.T, c metrics.Cause) string {
+	t.Helper()
+	texts := map[metrics.Cause]string{
+		metrics.CauseDNS:      "dial tcp: lookup api.anthropic.com: no such host",
+		metrics.CauseConnect:  "dial tcp 127.0.0.1:1: connect: connection refused",
+		metrics.CauseTLS:      "x509: certificate signed by unknown authority",
+		metrics.CauseTimeout:  "context deadline exceeded",
+		metrics.CauseCanceled: "context canceled",
+	}
+	text, ok := texts[c]
+	if !ok {
+		t.Fatalf("新增的 cause %q 没有在这里给出样例文本，无法验证其对客文案", c)
+	}
+	// Guards the mapping itself: a sample that no longer classifies as intended
+	// would make the assertion above vacuous.
+	if got := metrics.CauseFromText(text); got != c {
+		t.Fatalf("样例文本 %q 归类为 %q，期望 %q", text, got, c)
+	}
+	return text
 }
 
 // TestSafeMessageRejectsMachineText pins the shape rules directly, since they

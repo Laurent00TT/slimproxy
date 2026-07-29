@@ -33,6 +33,8 @@ package journal
 import (
 	"strings"
 	"time"
+
+	"github.com/Laurent00TT/slimproxy/metrics"
 )
 
 // Kind classifies an event. Everything shares one timeline, because the value
@@ -108,6 +110,15 @@ type Event struct {
 	// timeline.
 	CacheRead     int64 `json:"cache_r,omitempty"`
 	CacheCreation int64 `json:"cache_w,omitempty"`
+	// Cause is why a failed request failed, when a status code cannot say.
+	//
+	// The field this file's stated purpose depended on and did not have. A
+	// transport failure carries no HTTP status, so Status is zero for the
+	// failures that most need explaining, and a week of `ok:false` with nothing
+	// beside it answers nothing. Holds a classification, never the upstream's
+	// error text -- see metrics.Cause for why that distinction is load-bearing
+	// rather than tidiness.
+	Cause metrics.Cause `json:"cause,omitempty"`
 	// Auth is which credential served it, so a failure can be attributed to one
 	// rather than to "the pool".
 	Auth string `json:"auth,omitempty"`
