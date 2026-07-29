@@ -41,6 +41,32 @@ type Query struct {
 	Limit int
 }
 
+// SuppressesNoise reports whether refused outside traffic will be counted
+// instead of listed.
+//
+// The separation is a default-view policy, and it was being applied to
+// deliberate searches as well. `log -status 401 -since 72h` returned an empty
+// list and a footnote about scanner noise -- while the 401s the operator asked
+// for sat in that count, because Noise() looks at Kind and Src and never at the
+// status. Someone checking whether their key was being probed was told nothing
+// was there.
+//
+// So an explicit status turns the policy off. Asking for one status is not
+// browsing; it is looking for something specific, and a filter that quietly
+// removes matches is worse than no filter.
+//
+// -failed deliberately does not count as explicit. It means "show me failures",
+// which is browsing -- and a public hostname produces enough refused scans to
+// bury the failures that matter, which is the case the separation exists for.
+// Route, Model and MinLatency need no handling: reject events carry none of
+// those fields, so Match has already dropped them before this is consulted.
+func (q Query) SuppressesNoise() bool {
+	if q.IncludeNoise {
+		return false
+	}
+	return q.Status == 0
+}
+
 // Match reports whether an event satisfies the query.
 //
 // State events (proxy, tunnel, credential, doctor) pass every request-shaped
@@ -116,7 +142,7 @@ func Read(dir string, q Query) (Result, error) {
 
 	var ring []Event
 	push := func(e Event) {
-		if e.Noise() && !q.IncludeNoise {
+		if e.Noise() && q.SuppressesNoise() {
 			// Counted, not listed. And it does not consume a slot in Limit:
 			// a scanner would otherwise push out every request the operator
 			// actually asked to see.
@@ -201,7 +227,18 @@ type Summary struct {
 	Requests int
 	Failed   int
 	Rejects  int
-	Noise    int
+	// Noise counts refused outside traffic among the events that were listed.
+	Noise int
+	// NoiseHidden counts refused outside traffic withheld from the listing,
+	// set by the caller from Result.Noise.
+	//
+	// Separate from Noise, and the two must never be added: one describes rows
+	// the reader can see, the other rows they cannot. Summing them is what
+	// produced a footnote reading "另有 N 次…未计入上面的失败数" about requests
+	// sitting in the table directly above it -- wrong whenever -noise was
+	// passed, and wrong for every explicit -status search once those stopped
+	// being suppressed.
+	NoiseHidden int
 
 	// ByStatus counts failures per upstream status, which is what separates
 	// "replace the credential" from "wait".

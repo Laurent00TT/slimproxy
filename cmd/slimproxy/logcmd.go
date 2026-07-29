@@ -57,7 +57,11 @@ func cmdLog(cx *cliContext, args []string) error {
 	events := res.Events
 	if len(events) == 0 && res.Noise == 0 {
 		fmt.Fprintf(cx.stdout, "在 %s 内没有匹配的事件（目录 %s）\n", shortDuration(*since), dir)
-		if !*noise {
+		// Only advertise -noise when it would actually change the answer.
+		// Suggesting it after an explicit -status search would be a second lie
+		// on top of the one just fixed: nothing was hidden, so there is nothing
+		// for the flag to reveal.
+		if q.SuppressesNoise() {
 			fmt.Fprintf(cx.stdout, "外网扫描等被拒流量默认不显示，加 -noise 查看。\n")
 		}
 		return nil
@@ -68,7 +72,7 @@ func cmdLog(cx *cliContext, args []string) error {
 		fmt.Fprintln(cx.stdout)
 	}
 	summary := journal.Summarise(events)
-	summary.Noise += res.Noise
+	summary.NoiseHidden = res.Noise
 	writeJournalSummary(cx, summary, *since)
 	return nil
 }
@@ -170,8 +174,14 @@ func writeJournalSummary(cx *cliContext, s journal.Summary, since time.Duration)
 		// left.
 		fmt.Fprintf(cx.stdout, "  5 小时窗口用量峰值 %.0f%%\n", s.MaxQuota*100)
 	}
+	// Two different statements, and the wording has to match which one is true:
+	// withheld rows are news to the reader, listed ones are already on screen
+	// and only need labelling.
+	if s.NoiseHidden > 0 {
+		fmt.Fprintf(cx.stdout, "  另有 %d 次外部被拒请求未列出（扫描噪音，加 -noise 查看）\n", s.NoiseHidden)
+	}
 	if s.Noise > 0 {
-		fmt.Fprintf(cx.stdout, "  另有 %d 次外部被拒请求（扫描噪音，未计入上面的失败数）\n", s.Noise)
+		fmt.Fprintf(cx.stdout, "  上面有 %d 次是外部被拒请求（扫描噪音）\n", s.Noise)
 	}
 }
 
