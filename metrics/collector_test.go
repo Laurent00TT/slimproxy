@@ -86,11 +86,75 @@ func TestCacheTokensSurvive(t *testing.T) {
 	if !s.Cached() {
 		t.Error("有缓存读取却报告未命中")
 	}
-	if r := s.CacheRatio(); r < 0.8 {
-		t.Errorf("缓存占比 = %v，1358/(1358+200) 应约 0.87", r)
+	// The ratio is deliberately NOT derived from these fields any more. This
+	// record carries no canonical breakdown, so how much of TotalTokens the
+	// 1358 cache reads already account for is unknown -- and the old answer
+	// (1358/(1358+200)) assumed they did not overlap at all. On this proxy's
+	// real traffic they do, and that assumption reported 49% where the upstream
+	// meant 98%.
+	if r := s.CacheRatio(); r >= 0 {
+		t.Errorf("没有权威 breakdown 时应报告未知，实际算出了 %v", r)
 	}
 	// No cacheable prefix at all is not the same as a miss.
 	if r := (Sample{}).CacheRatio(); r >= 0 {
 		t.Errorf("没有可分母时应返回负数，实际 %v", r)
+	}
+}
+
+// TestCacheRatioUsesTheCanonicalBreakdown is the other half: given accounting
+// the upstream vouches for, the ratio must be right.
+//
+// The numbers are one of this proxy's own logged requests -- 104006 of 105633
+// input tokens served from cache. That request is the reason the old formula
+// was caught: it reported 49%, which on a healthy proxy would have looked like
+// caching half-broken.
+func TestCacheRatioUsesTheCanonicalBreakdown(t *testing.T) {
+	const (
+		uncached   = 1274
+		cacheRead  = 104006
+		cacheWrite = 353
+		inputTotal = uncached + cacheRead + cacheWrite // 105633
+		output     = 500
+	)
+	s := SampleFrom(cliproxyusage.Record{
+		Detail: cliproxyusage.Detail{
+			TotalTokens:         inputTotal + output,
+			CacheReadTokens:     cacheRead,
+			CacheCreationTokens: cacheWrite,
+			TokenBreakdown: cliproxyusage.NewSubsetTokenBreakdown(
+				inputTotal, cacheRead, cacheWrite, output, 0, inputTotal+output),
+		},
+	})
+
+	if s.InputTokens != inputTotal {
+		t.Fatalf("InputTokens = %d，应为 %d（breakdown 没被采信）", s.InputTokens, inputTotal)
+	}
+	got := s.CacheRatio()
+	if got < 0.98 || got > 0.99 {
+		t.Errorf("缓存占比 = %.4f，应约 0.9846（%d/%d）", got, cacheRead, inputTotal)
+	}
+}
+
+// TestUntrustworthyAccountingIsNotGuessedAt pins the conservative gate.
+//
+// A breakdown the upstream could not fully classify still carries plausible
+// numbers, and dividing them produces a plausible ratio. Showing it would put a
+// figure on screen that the source itself declined to stand behind -- and this
+// number exists to be believed when it says caching stopped working.
+func TestUntrustworthyAccountingIsNotGuessedAt(t *testing.T) {
+	s := SampleFrom(cliproxyusage.Record{
+		Detail: cliproxyusage.Detail{
+			TotalTokens:     2000,
+			CacheReadTokens: 1500,
+			// Unclassified accounting: the SDK says it could not attribute the
+			// total to buckets.
+			TokenBreakdown: cliproxyusage.NewUnclassifiedTokenBreakdown(2000),
+		},
+	})
+	if s.InputTokens != 0 {
+		t.Errorf("InputTokens = %d，无法归类的记账不该被当成输入总量", s.InputTokens)
+	}
+	if r := s.CacheRatio(); r >= 0 {
+		t.Errorf("缓存占比 = %v，应报告未知", r)
 	}
 }

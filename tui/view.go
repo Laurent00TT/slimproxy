@@ -212,7 +212,71 @@ func (m Model) headerRow(inner int) string {
 		{sText, "  "}, {sLabel, "rpm "}, {sNum, fmt.Sprint(m.stats.RPM)},
 		{sText, "  "}, {sLabel, "ttft "}, {sNum, ttft},
 	}
+
+	// Both are appended only when known, rather than shown as a dash. These are
+	// the two numbers on this line that mean something is wrong when they move,
+	// and a permanent "—" beside them trains the eye to skip the position they
+	// will appear in.
+	if m.stats.QuotaKnown {
+		q := m.stats.Quota5h
+		segs = append(segs,
+			segment{sText, "  "}, segment{sLabel, "配额 "},
+			segment{quotaStyle(q), pctText(q) + trendMark(m.stats.QuotaTrend)})
+	}
+	if m.stats.CacheKnown {
+		r := m.stats.CacheRatio
+		segs = append(segs,
+			segment{sText, "  "}, segment{sLabel, "缓存 "},
+			segment{cacheStyle(r), pctText(r)})
+	}
 	return row(inner, renderSegs(segs, inner))
+}
+
+// quotaHigh is where the five-hour window stops being background information.
+//
+// Eighty percent, which on a subscription is roughly the point where finishing
+// what you started matters more than starting something else.
+const quotaHigh = 0.8
+
+// cacheLow is where a cache ratio stops being plausible for this workload.
+//
+// Claude Code resends the system prompt, the file contents and the whole
+// conversation every turn, so a healthy proxy sits above ninety percent. Half
+// means something is perturbing the request -- and since the replies still look
+// perfectly normal, this colour is the only warning there is.
+const cacheLow = 0.5
+
+func quotaStyle(q float64) lipgloss.Style {
+	if q >= quotaHigh {
+		return sBad
+	}
+	return sNum
+}
+
+func cacheStyle(r float64) lipgloss.Style {
+	if r < cacheLow {
+		return sBad
+	}
+	return sNum
+}
+
+func pctText(f float64) string { return fmt.Sprintf("%.0f%%", f*100) }
+
+// trendMark renders the direction the quota window is moving.
+//
+// Direction only. The window is rolling, so it releases as it fills, and the
+// arrow says which of the two is currently winning -- a rate or a projected
+// exhaustion time would imply the release schedule is observable from here,
+// which it is not.
+func trendMark(trend int) string {
+	switch {
+	case trend > 0:
+		return " ↗"
+	case trend < 0:
+		return " ↘"
+	default:
+		return ""
+	}
 }
 
 // ---------- status rows ----------
@@ -570,7 +634,11 @@ func (m Model) routeRow(inner int, r metrics.RouteAgg) string {
 // Column widths for the request stream.
 const (
 	colTime   = 9 // "12:41:07 "
-	colStatus = 4 // "200 "
+	// Five, not four. The gap to the next column is part of this width, and a
+	// two-character Chinese cause label ("超时") is four cells wide on its own
+	// -- at four it rendered flush against the route with no space at all,
+	// while "429 " and "ok  " had looked fine and hid the assumption.
+	colStatus = 5
 	colTTFT   = 8
 	colTokens = 7
 )
@@ -675,9 +743,41 @@ func sampleStatus(s metrics.Sample) (string, lipgloss.Style) {
 		return "ok", sOK
 	case s.Status > 0:
 		return fmt.Sprint(s.Status), sBad
-	default:
-		return "err", sBad
 	}
+	// No status code. This is the larger half of the failures, not the odd one
+	// out -- a transport failure never gets one -- and it used to render as a
+	// bare "err" for every cause there is. A week of "err" answers nothing,
+	// which is the same gap the journal's Cause field was added to close; this
+	// is the display finally catching up with it.
+	if label, ok := causeLabels[s.Cause]; ok {
+		return label.text, label.style
+	}
+	return "err", sBad
+}
+
+// causeLabels renders a failure cause in the four columns the status field has.
+//
+// Chinese, which is what makes them fit: two characters occupy exactly the
+// width of "429 ", where "timeout" and "canceled" would not. The panel is
+// already in Chinese, so this costs no consistency -- it is the abbreviations
+// that would have been the foreign element.
+var causeLabels = map[metrics.Cause]struct {
+	text  string
+	style lipgloss.Style
+}{
+	metrics.CauseDNS:     {"DNS", sBad},
+	metrics.CauseConnect: {"断连", sBad},
+	metrics.CauseTLS:     {"TLS", sBad},
+	metrics.CauseTimeout: {"超时", sBad},
+	// Not red, and not counted as a fault by eye. The client pressed Ctrl-C;
+	// the proxy did nothing wrong, and colouring it like an outage makes a busy
+	// interactive session look like one -- the same reason the collector keeps
+	// this cause separate from CauseTimeout in the first place.
+	metrics.CauseCanceled: {"取消", sLabel},
+	// CauseUpstream carries an HTTP status, which the branch above already
+	// returned. Reaching here means it did not, so there is nothing more
+	// specific to say than that the upstream refused.
+	metrics.CauseUpstream: {"上游", sBad},
 }
 
 // ttftText renders a sample's time to first token, distinguishing "not

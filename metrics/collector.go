@@ -96,6 +96,23 @@ type Sample struct {
 	CacheRead     int64
 	CacheCreation int64
 
+	// InputTokens is the whole input side -- uncached, cache reads and cache
+	// writes together -- taken from the SDK's canonical breakdown.
+	//
+	// The denominator a cache ratio needs, and the reason it cannot be derived
+	// from the fields above plus Tokens: whether Detail.TotalTokens already
+	// includes the cached prefix varies by provider, which is precisely why the
+	// SDK added a non-overlapping breakdown beside it. Dividing by a sum of
+	// fields whose overlap is unknown produced a ratio that was wrong by about
+	// a factor of two on this proxy's own traffic.
+	//
+	// Zero when the upstream's accounting was not complete enough to trust, and
+	// callers must treat that as "unknown" rather than as an empty input. A
+	// cache ratio is only worth showing when it is right: the number exists to
+	// answer "is caching still working", and a wrong reading either raises a
+	// false alarm or hides a real one.
+	InputTokens int64
+
 	// Quota5h is the fraction of the rolling five-hour subscription window
 	// consumed, in [0,1]. Negative means the upstream did not report it.
 	//
@@ -150,6 +167,44 @@ type Snapshot struct {
 	// Independent of Recent: a request is in exactly one of the two, and it
 	// moves from this list to that one when the upstream finishes answering.
 	Pending []Pending
+
+	// Quota5h is the most recent reading of the rolling five-hour subscription
+	// window, in [0,1]. Only meaningful when QuotaKnown.
+	//
+	// The latest reading rather than an average over the window: this is a
+	// level, not a rate, and averaging a level across an hour reports where it
+	// has been instead of where it is.
+	Quota5h float64
+	// QuotaKnown separates an empty window from an unreported one.
+	//
+	// A flag rather than the negative sentinel Sample.Quota5h uses, and the
+	// asymmetry is deliberate: a Sample is filled in by one code path from one
+	// upstream record, while a Snapshot is a plain struct that anything can
+	// construct -- and a zero-valued one would then render "配额 0%", a
+	// perfectly plausible reading of a window that just reset. That is the same
+	// trap tunnel.Status avoids with ConnectionsKnown, for the same reason:
+	// "0 连接" and "未能确认" are different facts and the display must not
+	// print one meaning the other.
+	QuotaKnown bool
+
+	// QuotaTrend is +1 rising, -1 falling, 0 flat or not enough readings.
+	//
+	// Direction only, deliberately. The window is rolling, so consumption and
+	// release happen at once and the honest thing to say is which is winning --
+	// a rate would imply a precision these readings cannot support.
+	QuotaTrend int
+
+	// CacheRatio is the share of input tokens served from cache across the
+	// window, in [0,1]. Only meaningful when CacheKnown.
+	//
+	// Weighted by token count rather than averaged per request, because one
+	// enormous cached conversation and one tiny uncached probe are not two
+	// equal votes on whether caching is working.
+	CacheRatio float64
+	// CacheKnown is the same guard, and matters more here than it does for the
+	// quota: a zero-valued struct would render "缓存 0%", which is not a
+	// missing reading but the single worst one this dashboard can report.
+	CacheKnown bool
 }
 
 // Collector accumulates completed requests.
@@ -243,6 +298,7 @@ func SampleFrom(r cliproxyusage.Record) Sample {
 		Tokens:        r.Detail.TotalTokens,
 		CacheRead:     r.Detail.CacheReadTokens,
 		CacheCreation: r.Detail.CacheCreationTokens,
+		InputTokens:   trustedInputTokens(r.Detail),
 		Failed:        r.Failed,
 		Status:        r.Fail.StatusCode,
 		Cause:         causeOf(r),
@@ -285,6 +341,14 @@ func (c *Collector) prune(now time.Time) {
 	c.samples = kept
 }
 
+// quotaTrendEpsilon is how much the window has to move before the display
+// commits to a direction.
+//
+// One percentage point. Below that the arrow would flicker between up and down
+// on rounding alone, which reads as instability in the thing being measured
+// rather than in the measurement.
+const quotaTrendEpsilon = 0.01
+
 // Snapshot returns the derived numbers for one render.
 func (c *Collector) Snapshot(now time.Time) Snapshot {
 	// Read before c.mu is taken. InFlight has a lock of its own, and nesting
@@ -314,9 +378,31 @@ func (c *Collector) Snapshot(now time.Time) Snapshot {
 	var ttftN int
 	byRoute := map[string]*RouteAgg{}
 
+	// Quota readings are picked by timestamp rather than by position. The slice
+	// is in arrival order, which is very nearly time order and not quite -- the
+	// same reason Recent is sorted below rather than sliced.
+	var quotaFirst, quotaLast float64 = -1, -1
+	var quotaFirstAt, quotaLastAt time.Time
+	var cacheRead, inputTotal int64
+
 	for _, sm := range c.samples {
 		if sm.At.After(minuteAgo) {
 			snap.RPM++
+		}
+		if sm.Quota5h >= 0 {
+			if quotaFirst < 0 || sm.At.Before(quotaFirstAt) {
+				quotaFirst, quotaFirstAt = sm.Quota5h, sm.At
+			}
+			if quotaLast < 0 || sm.At.After(quotaLastAt) {
+				quotaLast, quotaLastAt = sm.Quota5h, sm.At
+			}
+		}
+		// Only requests whose accounting can be trusted contribute, to either
+		// side of the fraction. Adding a cache read whose denominator was
+		// discarded would inflate the ratio; the reverse would deflate it.
+		if sm.InputTokens > 0 {
+			cacheRead += sm.CacheRead
+			inputTotal += sm.InputTokens
 		}
 		if sm.TTFT > 0 {
 			ttftSum += sm.TTFT
@@ -330,6 +416,23 @@ func (c *Collector) Snapshot(now time.Time) Snapshot {
 		}
 		agg.Count++
 		agg.AvgTTFT += sm.TTFT
+	}
+
+	if quotaLast >= 0 {
+		snap.Quota5h, snap.QuotaKnown = quotaLast, true
+		// Direction is only claimed when there are two distinct readings to
+		// compare. One reading repeated is not a flat trend, it is no trend.
+		if quotaFirst >= 0 && !quotaFirstAt.Equal(quotaLastAt) {
+			switch d := quotaLast - quotaFirst; {
+			case d > quotaTrendEpsilon:
+				snap.QuotaTrend = 1
+			case d < -quotaTrendEpsilon:
+				snap.QuotaTrend = -1
+			}
+		}
+	}
+	if inputTotal > 0 {
+		snap.CacheRatio, snap.CacheKnown = float64(cacheRead)/float64(inputTotal), true
 	}
 
 	if ttftN > 0 {
@@ -419,6 +522,24 @@ func quotaFromHeaders(h http.Header) float64 {
 // prompt cache.
 func (s Sample) Cached() bool { return s.CacheRead > 0 }
 
+// trustedInputTokens returns the input total only when the upstream's own
+// accounting vouches for it.
+//
+// Two gates, and both are needed. Valid checks the v2 invariants -- that the
+// buckets actually sum to the totals they claim -- and Quality is the upstream
+// saying how confidently it could classify what it counted. A breakdown that is
+// internally consistent but was assembled from partial information still
+// produces a cache ratio that is quietly wrong, and a quietly wrong ratio is
+// worse than none: this number's whole job is to be believed when it says
+// caching stopped working.
+func trustedInputTokens(d cliproxyusage.Detail) int64 {
+	bd := d.TokenBreakdown
+	if !bd.Valid() || bd.Quality != cliproxyusage.TokenAccountingQualityComplete {
+		return 0
+	}
+	return bd.Input.TotalTokens
+}
+
 // CacheRatio is the fraction of input tokens that came from cache, in [0,1].
 //
 // Returns -1 when there is nothing to divide, which is not the same as zero: a
@@ -426,11 +547,15 @@ func (s Sample) Cached() bool { return s.CacheRead > 0 }
 // have hit and did not has a ratio of zero. Collapsing them would hide exactly
 // the case worth alarming on.
 func (s Sample) CacheRatio() float64 {
-	total := s.CacheRead + s.CacheCreation + s.Tokens
-	if total <= 0 {
+	// InputTokens, not CacheRead+CacheCreation+Tokens. That sum assumed the
+	// three were disjoint; on this proxy's own traffic they are not, and the
+	// double-counted cache halved the ratio -- reporting 49% where the upstream
+	// meant 98%. A number reported at half its true value would have raised the
+	// alarm this exists for on a perfectly healthy proxy.
+	if s.InputTokens <= 0 {
 		return -1
 	}
-	return float64(s.CacheRead) / float64(total)
+	return float64(s.CacheRead) / float64(s.InputTokens)
 }
 
 // redactAccount keeps an account identifier usable without keeping a secret.
