@@ -27,6 +27,12 @@ const (
 	// maxRouteRows bounds the route table so a busy proxy does not starve the
 	// request stream, which is the section that changes.
 	maxRouteRows = 4
+	// maxPendingRows bounds the in-flight rows for the same reason, from the
+	// other direction: the completed requests are where the failures are, and a
+	// burst of concurrent calls must not push them off the panel. Three,
+	// because past that the individual rows stop being readable as separate
+	// requests and the count in the section label says it better.
+	maxPendingRows = 3
 	// maxCompletions bounds the completion list.
 	maxCompletions = 8
 )
@@ -480,9 +486,46 @@ func (m Model) streamSections(inner, body int) []string {
 		return out
 	}
 
-	out = append(out, divider(inner, "最近请求"))
+	// The count goes in the section label as well as the rows. A tall enough
+	// panel shows both; a short one drops the rows first, and the label is what
+	// keeps "something is running" on screen when there is no line left to say
+	// it with.
+	pending := m.stats.Pending
+	label := "最近请求"
+	if len(pending) > 0 {
+		label = fmt.Sprintf("最近请求 · %d 进行中", len(pending))
+	}
+	out = append(out, divider(inner, label))
 	slots := body - len(out)
 
+	// In-flight rows come first, and are bounded so a burst cannot push the
+	// completed requests off the panel entirely -- the history is what the
+	// failures live in.
+	shown := pending
+	if len(shown) > maxPendingRows {
+		// Keeps the OLDEST, which is what Snapshot's ordering is for: the
+		// longest-running request is the one closest to being stuck, and
+		// dropping it to show three that just started would hide the row worth
+		// looking at.
+		shown = shown[:maxPendingRows]
+	}
+	if len(shown) > slots {
+		shown = shown[:slots]
+	}
+	// Rendered newest first, so the panel reads as one descending timeline
+	// across both kinds of row rather than folding back on itself in the
+	// middle. The selection above is by age; only the display order is
+	// reversed.
+	for i := len(shown) - 1; i >= 0; i-- {
+		out = append(out, m.pendingRow(inner, shown[i]))
+	}
+	if hidden := len(pending) - len(shown); hidden > 0 && body-len(out) > 0 {
+		out = append(out, row(inner, renderSegs([]segment{
+			{sLabel, fmt.Sprintf("  另有 %d 个进行中", hidden)},
+		}, inner)))
+	}
+
+	slots = body - len(out)
 	recent := m.stats.Recent
 	if len(recent) > slots {
 		recent = recent[:slots]
@@ -490,7 +533,10 @@ func (m Model) streamSections(inner, body int) []string {
 	for _, s := range recent {
 		out = append(out, m.sampleRow(inner, s))
 	}
-	if len(recent) == 0 && slots > 0 {
+	// Only claimed when nothing is running either. With a request in flight the
+	// panel would be saying "还没有完成的请求" directly under a row proving one
+	// is on its way, which reads as a contradiction rather than as two facts.
+	if len(recent) == 0 && len(pending) == 0 && slots > 0 {
 		out = append(out, row(inner, renderSegs([]segment{
 			{sLabel, "还没有完成的请求"},
 		}, inner)))
@@ -528,6 +574,54 @@ const (
 	colTTFT   = 8
 	colTokens = 7
 )
+
+// pendingMark stands in the status column for a request that has no outcome
+// yet. Not "···", which reads as truncation, and not a spinner: this row is
+// already animated by the elapsed time counting up, and a second moving part on
+// the same line draws the eye to the one carrying no information.
+const pendingMark = "▸"
+
+// pendingRow renders one in-flight request, in the columns a finished one uses.
+//
+// Sharing the layout is the point. When the upstream answers, this row is
+// replaced by a sampleRow in the same place, and matching columns make that
+// read as one request changing state rather than as one row vanishing and an
+// unrelated one arriving.
+//
+// The elapsed time sits in the TTFT column, which is a compromise worth naming.
+// That column means time-to-first-token for every other row, and this is not
+// that -- it is time since arrival. It goes there because it is the only
+// number on the row and the only thing on the whole panel that moves, and a
+// column of its own would cost width that the route needs. The mark in the
+// status column is what tells the two apart.
+func (m Model) pendingRow(inner int, p metrics.Pending) string {
+	elapsed := m.now.Sub(p.At)
+	fixed := colTime + colStatus + colTTFT + colTokens
+	rest := inner - fixed
+	if rest < 10 {
+		// Same degradation as sampleRow: the token column goes first, and here
+		// it never held anything but a dash.
+		rest = inner - (colTime + colStatus + colTTFT)
+		if rest < 6 {
+			return row(inner, renderSegs([]segment{{sText, truncate(p.Path, inner)}}, inner))
+		}
+		return row(inner, renderSegs([]segment{
+			{sLabel, pad(p.At.Format("15:04:05"), colTime)},
+			{sNum, pad(pendingMark, colStatus)},
+			{sText, pad(p.Path, rest)},
+			{sNum, padLeft(shortDur(elapsed), colTTFT)},
+		}, inner))
+	}
+	return row(inner, renderSegs([]segment{
+		{sLabel, pad(p.At.Format("15:04:05"), colTime)},
+		{sNum, pad(pendingMark, colStatus)},
+		{sText, pad(p.Path, rest)},
+		{sNum, padLeft(shortDur(elapsed), colTTFT)},
+		// A dash, not a blank. The cost is unknown until the upstream answers,
+		// and an empty cell in a column of numbers reads as zero.
+		{sLabel, padLeft("—", colTokens)},
+	}, inner))
+}
 
 func (m Model) sampleRow(inner int, s metrics.Sample) string {
 	status, statusStyle := sampleStatus(s)

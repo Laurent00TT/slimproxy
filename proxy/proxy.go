@@ -464,6 +464,12 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 		cliproxyapi.WithRouterConfigurator(func(_ *gin.Engine, h *handlers.BaseAPIHandler, _ *cliproxyconfig.Config) {
 			rt.auth = h.AuthManager
 		}),
+		// Registered here rather than in the journal branch above, for the same
+		// reason the health tracker is: what is running right now is a property
+		// of the display, not of the diary, and putting it up there would mean
+		// `log-to-file: false` silently emptied the dashboard's only live
+		// section.
+		cliproxyapi.WithMiddleware(InFlightMiddleware(rt.Stats.InFlight())),
 	)
 
 	svc, err := builder.Build()

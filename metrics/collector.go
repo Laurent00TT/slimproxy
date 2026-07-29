@@ -145,6 +145,11 @@ type Snapshot struct {
 	Active []RouteAgg    // busiest first
 	Uptime time.Duration
 	Total  int // samples currently held
+	// Pending is what is in flight right now, oldest first.
+	//
+	// Independent of Recent: a request is in exactly one of the two, and it
+	// moves from this list to that one when the upstream finishes answering.
+	Pending []Pending
 }
 
 // Collector accumulates completed requests.
@@ -166,7 +171,19 @@ type Collector struct {
 	// Must not block: it runs on the usage manager's dispatch goroutine, and a
 	// slow observer backs up that queue for every other plugin.
 	observe func(Sample)
+
+	// inflight is the other half of the picture, and the half a usage record
+	// cannot supply: a record exists only once the request is over. Kept here
+	// rather than alongside so the dashboard reads one source and cannot show a
+	// snapshot whose two halves came from different instants.
+	//
+	// Never guarded by c.mu -- it has its own. See Snapshot.
+	inflight *InFlight
 }
+
+// InFlight is the tracker request middleware reports arrivals and departures
+// to. Never nil.
+func (c *Collector) InFlight() *InFlight { return c.inflight }
 
 // Observe registers a callback for every completed request.
 //
@@ -181,7 +198,7 @@ func (c *Collector) Observe(fn func(Sample)) {
 
 // NewCollector returns a collector whose uptime starts now.
 func NewCollector() *Collector {
-	return &Collector{started: time.Now()}
+	return &Collector{started: time.Now(), inflight: NewInFlight()}
 }
 
 // HandleUsage implements cliproxyusage.Plugin.
@@ -270,11 +287,22 @@ func (c *Collector) prune(now time.Time) {
 
 // Snapshot returns the derived numbers for one render.
 func (c *Collector) Snapshot(now time.Time) Snapshot {
+	// Read before c.mu is taken. InFlight has a lock of its own, and nesting
+	// the two here would establish an ordering that a later caller reaching the
+	// other way could deadlock against. Nothing needs them consistent with each
+	// other: a request that completes in the gap is simply reported as finished
+	// one frame earlier than it would have been.
+	pending := c.inflight.Snapshot()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.prune(now)
 
-	snap := Snapshot{Uptime: now.Sub(c.started), Total: len(c.samples)}
+	// Pending goes in at construction, not at the end. There is an early return
+	// two lines down for the no-samples case, and that case -- a proxy that has
+	// started a request but not yet finished one -- is exactly when something in
+	// flight is the only thing there is to report.
+	snap := Snapshot{Uptime: now.Sub(c.started), Total: len(c.samples), Pending: pending}
 	if len(c.samples) == 0 {
 		return snap
 	}
