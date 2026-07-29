@@ -66,8 +66,14 @@ max-retry-interval: 30
 max-retry-credentials: 0
 
 debug: false
-# request-log writes request AND response bodies verbatim; redaction is
-# header-name based only. Treat the log directory as secret if you enable it.
+# request-log writes request AND response bodies verbatim. Redaction only
+# covers header names containing authorization, api-key, apikey, token or
+# secret -- Cookie and everything else is written in the clear. Treat the log
+# directory as secret material once you turn this on.
+#
+# Off means off. Upstream would still force a full dump on any 4xx or 5xx with
+# this disabled -- a bare 401 was enough -- so slimproxy closes that path
+# itself; see gatedRequestLogger in proxy/requestlog.go.
 request-log: false
 log-to-file: false
 

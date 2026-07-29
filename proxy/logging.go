@@ -215,6 +215,14 @@ func (c *Config) AppLogTarget() string {
 }
 
 // RequestLogTarget describes where request/response bodies land.
+//
+// "关闭" is meant literally, and that takes work to be true. Upstream still
+// writes a full error dump on any 4xx or 5xx when request logging is off --
+// which is how a bare 401 used to put a caller's whole prompt on disk while
+// this function reported the feature disabled. gatedRequestLogger closes that
+// path; TestRequestLogOffMeansNothingOnDisk asserts the wording and the empty
+// disk together, so whoever loosens the gate finds out here rather than in an
+// incident.
 func (c *Config) RequestLogTarget() string {
 	if !c.RequestLog {
 		return "关闭"

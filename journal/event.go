@@ -61,6 +61,14 @@ const (
 	// request event says what the upstream did; this says what the client
 	// asked for, and the interesting failures live in the gap between them.
 	KindFidelity Kind = "fidelity"
+	// KindHealth is a run of failures crossing a threshold, or ending.
+	//
+	// Distinct from the individual KindRequest failures it summarises: those
+	// record that something failed, this records that somebody was told. The
+	// distinction matters when reconstructing an outage, because the question
+	// is rarely "did it fail" and usually "how long did it fail before anyone
+	// knew".
+	KindHealth Kind = "health"
 )
 
 // Event is one line of the journal.

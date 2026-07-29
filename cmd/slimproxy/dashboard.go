@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -51,18 +50,11 @@ func runDashboard(cx *cliContext, cfg *proxy.Config) error {
 		return err
 	}
 
-	// Checked before the screen is taken, not after.
-	//
-	// A port already in use is the most common way starting this fails, and
-	// CLIProxyAPI reports it late: it prints "API server started successfully",
-	// loads every credential, starts the watcher, and only then returns the
-	// bind error. In panel mode that sequence renders as a dashboard that
-	// appears, sits there for a second, and vanishes -- the error does reach
-	// stderr, but after the alternate screen has come and gone, which reads as
-	// a crash rather than a diagnosis.
-	if err := ensureCanBind(cfg.Addr()); err != nil {
-		return err
-	}
+	// The port is checked inside Build, ahead of the screen being taken and
+	// ahead of the effective config being written -- see proxy.ensureCanBind.
+	// It used to be checked here, which was late enough that a doomed second
+	// instance had already rewritten the configuration the running one serves
+	// from.
 
 	// Take the process's stdout before anything can write to it. Silencing
 	// logrus is not sufficient: CLIProxyAPI announces the listener and every
@@ -97,26 +89,6 @@ func runDashboard(cx *cliContext, cfg *proxy.Config) error {
 			"slimproxy: 退出时「%s」仍在执行，已被中止，结果未知\n", aborted)
 	}
 	return err
-}
-
-// ensureCanBind reports whether the listen address is available.
-//
-// There is a race here -- the port could be taken between this check and the
-// real bind -- and it is deliberately accepted. Losing that race lands in
-// exactly the behaviour this replaces, so the check can only help; winning it,
-// which is the normal case, turns a dashboard that flashes and disappears into
-// a sentence naming the problem.
-//
-// The message says what to do about it, because the overwhelmingly likely cause
-// is the operator's own earlier instance still running.
-func ensureCanBind(addr string) error {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("无法绑定 %s：%w\n"+
-			"很可能已有一个 slimproxy 在运行。用 \"slimproxy status\" 查看，"+
-			"停掉它，或用 -port 换一个端口", addr, err)
-	}
-	return ln.Close()
 }
 
 // supervise runs the proxy and the dashboard bound to one context, and decides
@@ -232,7 +204,7 @@ func dashboardDeps(cx *cliContext, cfg *proxy.Config, rt *proxy.Runtime) (tui.De
 			// to a tunnel transition explains itself, and in a separate file
 			// explains nothing.
 			rt.Note(journal.Event{
-				Kind: journal.KindTunnel, State: "up",
+				Kind: journal.KindTunnel, State: tunnelState(st, err),
 				Detail: tunnelNote(st, err),
 			})
 			return st, err
@@ -240,7 +212,7 @@ func dashboardDeps(cx *cliContext, cfg *proxy.Config, rt *proxy.Runtime) (tui.De
 		TunnelDown: func(ctx context.Context) (tunnel.Status, error) {
 			st, err := mgr.Down(ctx)
 			rt.Note(journal.Event{
-				Kind: journal.KindTunnel, State: "down",
+				Kind: journal.KindTunnel, State: tunnelState(st, err),
 				Detail: tunnelNote(st, err),
 			})
 			return st, err
@@ -279,6 +251,34 @@ func registeredRoutes() []tui.Route {
 		out = append(out, tui.Route{Client: string(c.Pair.Client), Provider: string(c.Pair.Provider)})
 	}
 	return out
+}
+
+// tunnelState reports where the tunnel actually ended up, not what was asked
+// of it.
+//
+// Both callers used to hardcode the state to the operation they were
+// attempting, so a failed "up" was journalled as State:"up" with a Detail
+// reading "失败: ...". Two of the three tunnel events ever recorded were that
+// contradiction, which makes any consumer filtering on State wrong about the
+// timeline exactly when it is being read to explain an outage.
+//
+// The observed status is the honest answer, and it is better than reporting
+// "failed": the real case was Up refusing because a tunnel was already
+// running, where the operation failed but the tunnel is genuinely up. When the
+// status could not be read either, say so rather than guessing -- the failure
+// text is in Detail.
+func tunnelState(st tunnel.Status, err error) string {
+	switch st.State {
+	case tunnel.Running:
+		return "up"
+	case tunnel.Configured, tunnel.NotConfigured:
+		return "down"
+	default:
+		if err != nil {
+			return "failed"
+		}
+		return "unknown"
+	}
 }
 
 // tunnelNote condenses a tunnel transition into one line for the journal.

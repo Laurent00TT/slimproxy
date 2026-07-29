@@ -301,6 +301,60 @@ func TestInitBothForms(t *testing.T) {
 		if !strings.Contains(string(body), "custom-auth-x1") {
 			t.Errorf("%s: -init-auth-dir was ignored; config says:\n%s", form, body)
 		}
+		// The template used to promise secrecy only "if you enable it", which
+		// was false: upstream dumped bodies on every 4xx and 5xx with request
+		// logging off. The claim is true now, and a generated config is where
+		// most operators will read it, so it should not silently regress.
+		if strings.Contains(string(body), "if you enable it") {
+			t.Errorf("%s: 生成的配置仍在把「逐字写盘」绑在 request-log 开启这个前提上", form)
+		}
+		if !strings.Contains(string(body), "Off means off") {
+			t.Errorf("%s: 生成的配置没有说明 request-log 关闭是真的关闭", form)
+		}
+	}
+}
+
+// TestDocsDoNotTieVerbatimBodiesToTheSwitch guards against documentation drift.
+//
+// Every one of these files once explained that bodies land on disk "when
+// request-log is on" -- an "if" that upstream did not honour. The wording is
+// worth pinning because it is the sentence an operator uses to decide whether
+// the log directory holds anything sensitive.
+func TestDocsDoNotTieVerbatimBodiesToTheSwitch(t *testing.T) {
+	root := repoRoot(t)
+	for _, name := range []string{
+		"README.md",
+		"docs/GUIDE.md",
+		"slimproxy.example.yaml",
+		".gitignore",
+	} {
+		body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if strings.Contains(string(body), "when request-log is on") {
+			t.Errorf("%s 仍把逐字写盘限定在「request-log 开启」时，"+
+				"而错误转储路径曾经无视这个开关", name)
+		}
+	}
+}
+
+// repoRoot walks up from the test's working directory until it finds go.mod.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("找不到仓库根目录（向上没有 go.mod）")
+		}
+		dir = parent
 	}
 }
 

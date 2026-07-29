@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -77,6 +78,10 @@ type Runtime struct {
 	// Journal records what happened, durably. Nil when journalling is off.
 	Journal *journal.Writer
 	rejects *journal.RejectFolder
+
+	// Health turns runs of failures into something said out loud. Present
+	// regardless of whether journalling is on -- see where it is constructed.
+	Health *metrics.Health
 }
 
 // JournalDirName is the event stream's directory, under the log directory.
@@ -269,8 +274,10 @@ func Run(ctx context.Context, c Config, stateDir string) error {
 // Build resolves the configuration, materializes it, and assembles the service
 // without starting it.
 //
-// Separated from Run so callers can inspect what was resolved before binding a
-// port, and so tests can exercise the mapping without a listener.
+// Separated from Run so callers can inspect what was resolved before the
+// service is running. It does briefly bind the listen address to check it is
+// free -- see ensureCanBind for why that has to happen here rather than in the
+// callers.
 func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("slimproxy: invalid config: %w", err)
@@ -304,13 +311,25 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 	// sensitive directory this program owns.
 	tighten(cfg.AuthDir)
 
-	// The request log is created by the upstream logger, which uses 0755 for
-	// the directory and 0644 for the files -- the one place in this deployment
-	// that breaks the 0700/0600 rule, and it holds request and response bodies
-	// verbatim. Creating it first is what lets the permission be ours:
-	// MkdirAll leaves an existing directory's mode alone.
-	if c.RequestLog {
-		if dir, derr := c.resolvedRequestLogDir(); derr == nil {
+	// The request log holds request and response bodies verbatim, so it gets
+	// the same treatment as the credential directory. Creating it ourselves is
+	// what lets the permission be ours: the upstream logger would create it
+	// with 0755, and MkdirAll leaves an existing directory's mode alone.
+	//
+	// The tighten in the else branch is not redundant. Builds before
+	// gatedRequestLogger wrote error dumps here with request logging off, so
+	// this directory can already exist, full of other people's prompts, having
+	// been created by upstream and never hardened. MkdirAll would not fix it
+	// and nothing else visits it. On Windows the exposure is an inherited ACE
+	// rather than a mode -- see the fsperm package doc, which measured exactly
+	// that on this project's own directories.
+	//
+	// It is deliberately not created when request logging is off: the gate
+	// guarantees nothing will write there, and an empty directory would only
+	// suggest to an operator that logs exist.
+	if dir, derr := c.resolvedRequestLogDir(); derr == nil {
+		switch _, statErr := os.Stat(dir); {
+		case c.RequestLog:
 			if err := os.MkdirAll(dir, 0o700); err != nil {
 				// Fail loud. The upstream middleware discards write errors
 				// entirely (two `// Log error but continue` sites), so a
@@ -325,7 +344,15 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 					"上游的请求日志中间件会丢弃写入错误，所以这必须在启动时拦下——"+
 					"否则代理会正常运行但一个字节都不记录", dir, err)
 			}
+		case statErr == nil:
+			tighten(dir)
 		}
+	}
+
+	// Before materialize, never after: writing the effective config is what
+	// makes this instance's settings live for whoever is already serving.
+	if err := ensureCanBind(c.Addr()); err != nil {
+		return nil, err
 	}
 
 	path, err := materialize(cfg, stateDir)
@@ -374,7 +401,9 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 			rt.Journal = jw
 			// Completed requests arrive through the collector, so the field
 			// mapping has exactly one implementation.
-			rt.Stats.Observe(func(sm metrics.Sample) { jw.Append(journal.FromSample(sm)) })
+			// Sample observation is registered once, below and
+			// unconditionally -- health tracking must not depend on
+			// journalling being on.
 			// Refused requests never reach an executor and never produce a
 			// usage record; they are only visible to a middleware.
 			rt.rejects = journal.NewRejectFolder(jw.Append)
@@ -386,6 +415,30 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 			)
 		}
 	}
+	// Health tracking, and the one observer both it and the journal ride on.
+	//
+	// Registered outside the journal branch on purpose. Everything that watches
+	// requests used to live in there, so `log-to-file: false` bought silence
+	// from the diary and from the alarm at once -- the same coupling the
+	// journal's own directory resolution was changed to avoid, one level up.
+	//
+	// What this catches: a run of failures nobody is looking at. The collector
+	// saw all 107 failures of a two-day upstream outage and filed every one of
+	// them, and the first anyone knew of it was reading the files afterwards.
+	//
+	// What it cannot catch: anything that fails before reaching an executor,
+	// because that produces no usage record. Refused and misrouted requests are
+	// the reject folder's half of the picture, not this one's.
+	rt.Health = metrics.NewHealth(func(ev metrics.HealthEvent) {
+		log.Warnf("slimproxy: %s", ev.Text())
+		rt.Note(journal.Event{Kind: journal.KindHealth, State: ev.State(), Detail: ev.Text()})
+	})
+	// Note is nil-safe, so this closure is correct with or without a journal.
+	rt.Stats.Observe(func(sm metrics.Sample) {
+		rt.Note(journal.FromSample(sm))
+		rt.Health.Observe(sm)
+	})
+
 	builder = builder.WithServerOptions(
 		cliproxyapi.WithRouterConfigurator(func(_ *gin.Engine, h *handlers.BaseAPIHandler, _ *cliproxyconfig.Config) {
 			rt.auth = h.AuthManager
@@ -449,6 +502,39 @@ func materialize(cfg *cliproxyconfig.Config, stateDir string) (string, error) {
 // be locked down helps nobody, and the proxy is still no worse off than it was.
 // But it is reported, because tightening nothing and saying nothing is how the
 // exposure above went unnoticed.
+// ensureCanBind reports whether the listen address is available.
+//
+// It lives in Build, ahead of materialize, because the damage a doomed second
+// instance does happens before it ever tries to listen. materialize rewrites
+// the effective configuration, and that file is what the upstream watcher
+// reloads -- so an instance that is about to fail on a busy port first hands
+// its own settings to the instance already serving on it. Per-port file naming
+// narrowed this to same-port collisions; a same-port collision is exactly the
+// case that cannot bind, so checking here closes what is left.
+//
+// There is a race -- the port could be taken between this check and the real
+// bind -- and it is deliberately accepted. Losing it lands in the old
+// behaviour, so the check can only help. Winning it, the normal case, also
+// turns a late, confusing failure into a sentence: CLIProxyAPI prints "API
+// server started successfully", loads every credential, starts the watcher,
+// and only then returns the bind error, which in panel mode reads as a
+// dashboard that appears and vanishes.
+//
+// The message names the likely cause because it usually is one: the operator's
+// own earlier instance, still running.
+func ensureCanBind(addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		// No "slimproxy:" prefix -- main already adds one, and this message is
+		// the most common startup failure there is, so a doubled prefix would
+		// be the thing operators see most often.
+		return fmt.Errorf("无法绑定 %s：%w\n"+
+			"很可能已有一个 slimproxy 在运行。用 \"slimproxy status\" 查看，"+
+			"停掉它，或用 -port 换一个端口", addr, err)
+	}
+	return ln.Close()
+}
+
 func tighten(path string) {
 	if err := fsperm.Restrict(path); err != nil {
 		log.Warnf("slimproxy: 未能收紧 %s 的访问权限（本机其他用户可能可读）: %v", path, err)

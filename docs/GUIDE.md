@@ -725,8 +725,15 @@ slimproxy.exe check     # 输出里的 "app log" 一行
 
 ### 别做的
 
-- **别开 `request-log` 除非你确实要。** 它把请求和响应的**完整 body** 逐字写盘，
-  脱敏只作用于 header 名字。任何出现在 body 里的密钥都会明文落地。
+- **别开 `request-log` 除非你确实要。** 它把请求和响应的**完整 body** 逐字写盘。
+  脱敏作用于 header 名和 query 名，而且名字里得含 `authorization`、`api-key`、
+  `apikey`、`token`、`secret` 才算数——`Cookie` 不在名单上，明文落盘。任何出现在
+  body 里的密钥都会明文落地。
+
+  关掉它是真的关掉，但这是 slimproxy 主动堵的，不是上游的默认行为：上游在
+  `request-log` 关闭时仍会对任何 4xx/5xx 强制写全量转储，一个未鉴权的 401
+  就足以把调用方的整段对话写上磁盘。见 `proxy/requestlog.go` 的
+  `gatedRequestLogger`。
 - **别把 `slimproxy.<端口>.effective.yaml` 分享出去。** 那是生成的运行时配置，含所有 key，
   每次启动重写。文件名带端口是有意的：同一目录下跑两个实例时，如果共用一个文件名，
   后启动的会覆盖前一个正在服务的配置——而那个文件是被热重载监听的。

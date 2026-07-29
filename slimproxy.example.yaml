@@ -37,10 +37,16 @@ max-retry-credentials: 0
 
 # Diagnostics.
 #
-# request-log writes full request AND response bodies to disk. Redaction is
-# header/query-name based only; bodies are written verbatim, so anything
-# secret carried in a body is logged in the clear. Treat the log directory as
-# secret material if you turn this on.
+# request-log writes full request AND response bodies to disk. Bodies are
+# written verbatim, so anything secret carried in one is logged in the clear.
+# Redaction applies to header and query names, and only to those containing
+# authorization, api-key, apikey, token or secret -- Cookie is not on that
+# list. Treat the log directory as secret material once you turn this on.
+#
+# Off means off, which took work: upstream forces a full dump on any 4xx or
+# 5xx while this is disabled, so an unauthenticated request used to be enough
+# to write a caller's whole prompt. slimproxy closes that path -- see
+# gatedRequestLogger in proxy/requestlog.go.
 #
 # log-to-file is forced on when the full-screen panel runs (slimproxy on a
 # terminal). The panel owns stdout, so a log line written there would land in
@@ -54,8 +60,9 @@ log-to-file: false
 # Empty means "logs" under the working directory.
 log-dir: ""
 
-# Where request-log bodies land when request-log is on. Empty means
-# "<log-dir>/requests". Treat as secret material -- see request-log above.
+# Where request-log bodies land. Empty means "<log-dir>/requests". The
+# directory is only created while request-log is on; treat it as secret
+# material -- see request-log above.
 request-log-dir: ""
 
 # How many days of the structured event stream to keep, under <log-dir>/events.

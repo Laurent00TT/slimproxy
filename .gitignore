@@ -13,7 +13,10 @@ slimproxy.*.effective.yaml
 # Operator config; contains secrets. Commit slimproxy.example.yaml instead.
 slimproxy.yaml
 
-# OAuth credential material.
+# OAuth credential material. Also request dumps: before slimproxy pinned the
+# directory, upstream's resolver fell back to <auth-dir>/logs, and the files it
+# left there hold verbatim bodies -- including, in at least one case, an
+# unredacted session Cookie.
 auths/
 
 # Guard against stray credential copies landing in source directories. A real
@@ -30,9 +33,16 @@ cloudflared.pid.json
 cloudflared.log
 
 # Logs. Not merely noise: logs/requests/ holds verbatim request and response
-# bodies when request-log is on, and redaction there is header-name based only,
-# so anything secret carried in a body is on disk in the clear. logs/ also
-# receives stray-stdout.log in panel mode.
+# bodies, and redaction there covers only header names containing
+# authorization, api-key, apikey, token or secret -- Cookie and anything secret
+# carried in a body is on disk in the clear. logs/ also receives
+# stray-stdout.log in panel mode.
+#
+# This rule does not depend on request-log being on. It was not sufficient
+# before: upstream forced a dump on every 4xx and 5xx even with request logging
+# disabled. That path is closed now, but the reason to ignore the directory is
+# that it can hold bodies at all -- do not narrow this rule on the strength of
+# a code path.
 logs/
 run.log
 

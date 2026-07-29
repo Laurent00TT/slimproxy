@@ -311,8 +311,14 @@ contract:
 - **`request-retry: 0` disables retry entirely.** CLIProxyAPI ships no default for it, and
   the cooldown-aware outer loop is skipped when it is zero. Only `config.example.yaml`
   suggests 3. It is an outer *attempt cap*, not an HTTP retry count.
-- **`request-log` writes bodies verbatim.** Redaction is header- and query-name based only.
-  Any credential carried in a request or response body lands in the log unredacted.
+- **`request-log` writes bodies verbatim.** Redaction is header- and query-name based, and
+  the name has to contain `authorization`, `api-key`, `apikey`, `token` or `secret` to
+  match — `Cookie` does not, and is written in the clear. Any credential carried in a
+  request or response body lands in the log unredacted.
+- **`request-log: false` genuinely writes nothing.** Upstream forces a full dump on any 4xx
+  or 5xx while request logging is disabled, so an unauthenticated request was enough to put
+  a caller's whole prompt on disk. slimproxy closes that path by narrowing the logger's
+  method set; see `gatedRequestLogger` in `proxy/requestlog.go`.
 - **Shutdown is not graceful after 30s uptime.** CLIProxyAPI establishes its shutdown
   deadline at startup rather than at signal time, so a long-lived process cuts in-flight
   streams instead of draining them.
