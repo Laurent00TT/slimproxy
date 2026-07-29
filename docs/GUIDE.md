@@ -796,6 +796,18 @@ slimproxy.exe check     # 输出里的 "app log" 一行
 - `log-to-file: true` 或**面板模式**：`logs/slimproxy.log`
 - 面板模式还有 `logs/stray-stdout.log`，装的是第三方库直接往 stdout 写的东西
 
+### 如果你看到 `logs/main.log`
+
+这个文件不是 slimproxy 建的，是底层的 CLIProxyAPI 建的。它在配置重载时会
+接管全局日志器，把输出改道到这里——格式不一样，也没有 slimproxy 设的轮转上限。
+
+**曾经这是个静默故障**：一旦被接管就再也回不来，`slimproxy > run.log` 从那一刻起
+一个字节都收不到，而且没有任何提示。日志看起来就是"突然停了"，进程却还在正常服务。
+
+现在 slimproxy 每 5 秒把日志目的地重新钉回自己的文件。所以 `main.log` 可能存在、
+可能有零星几行（被接管到恢复之间的那几秒），但主日志不会再丢。这几行不会消失，
+只是待在那个文件里。
+
 ---
 
 ## 10. 安全须知

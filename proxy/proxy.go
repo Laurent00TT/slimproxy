@@ -110,6 +110,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 	defer cancel()
 	go r.guardInboundAuth(ctx, cancel)
 	go keepRefusalHooksInstalled(ctx)
+	// The application log is displaced by the same class of event as the
+	// refusal hooks -- a config reload -- and just as silently. See logpin.go.
+	go keepLogOutputPinned(ctx)
 
 	// Start and stop go into the same timeline as the requests. Half of
 	// retrospective debugging is noticing that the thing being investigated

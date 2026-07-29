@@ -93,7 +93,7 @@ func setupLogging(c *Config, opts ...logOption) (string, io.Closer, error) {
 	if !c.LogToFile {
 		// stdout, not stderr: `slimproxy > app.log` should capture the logs.
 		// The default of stderr silently produced a near-empty file.
-		log.SetOutput(os.Stdout)
+		setLogOutput(os.Stdout)
 		return "", nopCloser{}, nil
 	}
 
@@ -125,7 +125,7 @@ func setupLogging(c *Config, opts ...logOption) (string, io.Closer, error) {
 	}
 	if set.noStdout {
 		// The caller owns the terminal. File only.
-		log.SetOutput(rotator)
+		setLogOutput(rotator)
 		// gin's writers were pointed at logrus above, so they follow. Its
 		// debug print is the exception: DebugPrintFunc routes through logrus,
 		// but gin also writes its startup banner directly to os.Stdout unless
@@ -135,7 +135,7 @@ func setupLogging(c *Config, opts ...logOption) (string, io.Closer, error) {
 	}
 	// Tee to stdout as well: a container that only collects stdout should not
 	// go silent because file logging was enabled.
-	log.SetOutput(io.MultiWriter(os.Stdout, rotator))
+	setLogOutput(io.MultiWriter(os.Stdout, rotator))
 	return dir, rotator, nil
 }
 
