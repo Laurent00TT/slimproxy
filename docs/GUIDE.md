@@ -675,6 +675,37 @@ slimproxy.exe auth list   # 凭据还有效吗
 | 502 / 超时 | 上游连不上 | `doctor` 看 upstream-dns 和 upstream-reach |
 | 面板显示「无可用凭据」 | 池子空了或全坏了 | `auth list` 看详情，`auth add` 补 |
 
+### 客户端拿到的错误比日志里的简略
+
+这是有意的。上游 SDK 会把 Go 的原始错误文本直接塞进给调用方的响应里，于是一次
+连接失败会变成这样发出去：
+
+```
+dial tcp 198.18.0.42:443: connectex: A connection attempt failed because...
+```
+
+里面有两样不该出门的东西：`198.18.x.x` 说明这台机器走 fake-ip 代理，
+`connectex` 说明它是 Windows。代理一旦暴露到公网，这些就是免费的侦察情报。
+
+所以 slimproxy 把发给调用方的失败信息换成了固定分类：
+
+| 客户端看到 | 实际含义 |
+|---|---|
+| `upstream unreachable: dns resolution failed` | 域名解析失败 |
+| `upstream unreachable: connection failed` | 连不上（拒绝／超时／路由不通） |
+| `upstream unreachable: tls handshake failed` | TLS 握手失败 |
+| `upstream timeout` | 超时 |
+| `upstream unavailable` | 502／503 |
+
+**完整原文没有丢**，只是不再发给调用方——它照常写进应用日志和事件流：
+
+```bash
+slimproxy.exe log -status 500 -n 20
+```
+
+上游 Anthropic 自己返回的错误（限流详情、参数错误、overloaded）**原样透传**，
+不受影响——那些是调用方需要的信息。
+
 ### `doctor` 报 fake-ip 劫持
 
 ```

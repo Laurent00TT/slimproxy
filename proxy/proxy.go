@@ -366,6 +366,18 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 		WithServerOptions(
 			// Owns where request logs land -- see newRequestLoggerFactory.
 			cliproxyapi.WithRequestLoggerFactory(newRequestLoggerFactory(c)),
+			// First, and it has to stay first: it wraps the response writer, so
+			// every middleware and handler registered after it writes through
+			// the wrapper. Registered ahead of the journal middlewares
+			// deliberately -- those read the status, which the wrapper reports
+			// faithfully, while the body they never see is the part it rewrites.
+			//
+			// The redaction is one-directional by construction: upstream stores
+			// the unredacted body in the gin context (appendAPIResponse) before
+			// handing it to the writer, so the request log and the journal keep
+			// the full text and only the caller's copy is replaced. That split
+			// is the whole design -- see errorenvelope.go.
+			cliproxyapi.WithMiddleware(ErrorEnvelopeMiddleware()),
 			// Keeps upstream policy refusals from reaching callers as an
 			// unexplained empty completion -- see RefusalHookMiddleware.
 			cliproxyapi.WithMiddleware(RefusalHookMiddleware()),

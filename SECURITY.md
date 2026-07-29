@@ -10,6 +10,11 @@ following classes of bug security-relevant, not just incorrect:
 - Anything that writes credential material, request bodies, or tokens to a
   location the documentation does not name as secret.
 - Anything that widens what the tunnel exposes beyond the API surface.
+- Anything that puts local network or host detail into a response body. The
+  upstream SDK builds failure responses from the Go error's text, so a dial
+  failure will carry an address and a platform-specific syscall name unless
+  something stops it — see `proxy/errorenvelope.go`, which is deny-by-default
+  for exactly that reason.
 - Permission regressions on `auths/`, the effective config, or the PID record
   (on Windows, mode bits alone are not access control — see `fsperm/`).
 
