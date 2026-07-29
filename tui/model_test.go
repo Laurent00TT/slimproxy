@@ -155,6 +155,102 @@ func TestEscapeClosesPanelWithoutQuitting(t *testing.T) {
 	}
 }
 
+// runCommand types a command at the prompt and submits it.
+//
+// Spelled out as keystrokes rather than calling execute directly: the path a
+// command reaches its Run through -- match, selection, the Danger gate -- is
+// half of what these tests are pinning, and a helper that skipped it would let
+// a command that is unreachable by typing still pass.
+func runCommand(t *testing.T, m Model, name string) Model {
+	t.Helper()
+	m, _ = press(t, m, key("/"))
+	for _, r := range name {
+		m, _ = press(t, m, key(string(r)))
+	}
+	m, _ = press(t, m, special(tea.KeyEnter))
+	return m
+}
+
+// TestMonitorReturnsToTheStream is the command half of the pair above.
+//
+// The panel replaces the request stream rather than overlaying it, and says
+// nothing about where the stream went. /monitor exists for the operator who
+// never found Esc, which makes its failure mode specific: it would fail exactly
+// the person who has no other way back.
+func TestMonitorReturnsToTheStream(t *testing.T) {
+	m := sampleModel(90, 30)
+	m.result = &actionResult{Title: "诊断报告", Lines: []string{"a", "b", "c"}}
+	m.resultTop = 2
+
+	m = runCommand(t, m, "monitor")
+
+	if m.result != nil {
+		t.Error("/monitor 应关闭输出面板")
+	}
+	if m.resultTop != 0 {
+		t.Errorf("滚动位置 = %d，应随面板一起复位；否则下次开panel会从旧偏移开始", m.resultTop)
+	}
+	if m.quitting {
+		t.Error("/monitor 不应退出程序")
+	}
+	if m.noteErr {
+		t.Errorf("/monitor 不应报错，实际 note = %q", m.note)
+	}
+}
+
+// TestMonitorAgreesWithEscape pins the two spellings against each other.
+//
+// The same guard runQuit's comment describes for /quit and the q key. A command
+// added for redundancy is only redundant while it lands in the same state; one
+// that drifts is worse than no command, because it teaches a way back that
+// behaves differently from the one the help bar advertises.
+func TestMonitorAgreesWithEscape(t *testing.T) {
+	open := func() Model {
+		m := sampleModel(90, 30)
+		m.result = &actionResult{Title: "诊断报告", Lines: []string{"a", "b", "c"}}
+		m.resultTop = 2
+		return m
+	}
+
+	viaKey, _ := press(t, open(), special(tea.KeyEsc))
+	viaCmd := runCommand(t, open(), "monitor")
+
+	if (viaKey.result == nil) != (viaCmd.result == nil) {
+		t.Errorf("Esc 与 /monitor 对面板的处理不一致: key=%v cmd=%v",
+			viaKey.result, viaCmd.result)
+	}
+	if viaKey.resultTop != viaCmd.resultTop {
+		t.Errorf("滚动位置不一致: Esc=%d /monitor=%d", viaKey.resultTop, viaCmd.resultTop)
+	}
+	if viaKey.quitting != viaCmd.quitting {
+		t.Errorf("退出状态不一致: Esc=%v /monitor=%v", viaKey.quitting, viaCmd.quitting)
+	}
+}
+
+// TestMonitorOnAnOpenStreamSaysSo covers the no-op.
+//
+// Typing a command and seeing the screen not change is indistinguishable from
+// typing one that failed. This is the command most likely to be tried by
+// someone finding out what it does, so the answer has to be visible.
+func TestMonitorOnAnOpenStreamSaysSo(t *testing.T) {
+	m := sampleModel(90, 30)
+	if m.result != nil {
+		t.Fatal("前提错了：sampleModel 不该带着打开的面板")
+	}
+
+	m = runCommand(t, m, "monitor")
+
+	if m.note == "" {
+		t.Error("面板已经关着时 /monitor 应给出一句反馈，而不是静默")
+	}
+	if m.noteErr {
+		t.Errorf("这不是错误，只是无事可做，实际 note = %q", m.note)
+	}
+	if m.quitting {
+		t.Error("/monitor 不应退出程序")
+	}
+}
+
 // TestTypingInCommandModeDoesNotQuit pins that q is a character once the
 // prompt is open. Typing "/quit" would otherwise quit on its first letter.
 func TestTypingInCommandModeDoesNotQuit(t *testing.T) {

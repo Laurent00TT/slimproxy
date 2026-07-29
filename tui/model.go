@@ -550,6 +550,15 @@ func (m Model) execute(c *Command, args []string) (tea.Model, tea.Cmd) {
 		// Same path as the q key, including the in-flight guard.
 		return m.requestQuit()
 	case spec.Do == nil:
+		// Dismiss is honoured only here, on the branch that finishes without
+		// work. The branch below clears m.result too, so a command with a Do
+		// already returns to the stream on its way to opening its own panel --
+		// acting on the flag there as well would read as a second, independent
+		// effect and invite someone to set it expecting one.
+		if spec.Dismiss {
+			m.result = nil
+			m.resultTop = 0
+		}
 		if spec.Note != "" {
 			m.setNote(spec.Note, false)
 		}

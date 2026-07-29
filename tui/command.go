@@ -39,8 +39,18 @@ type Command struct {
 //
 // Ordered by how often they are wanted, not alphabetically: the tunnel
 // switches are the reason this exists.
+//
+// monitor leads anyway, ahead of them. It is the only entry that changes
+// nothing outside this display, and the moment it is wanted is the moment the
+// operator is looking at the wrong screen and opening this list to find the way
+// back -- which makes first the only place it can be.
 func commandSet() []*Command {
 	return []*Command{
+		{
+			Name:    "monitor",
+			Summary: "回到实时请求流（与 Esc 等效）",
+			Run:     runMonitor,
+		},
 		{
 			Name:    "tunnel status",
 			Summary: "查询隧道三态与 Cloudflare 侧连接数",

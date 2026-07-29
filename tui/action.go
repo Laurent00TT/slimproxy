@@ -27,6 +27,19 @@ type actionSpec struct {
 	Note string
 	// Quit ends the program after this action.
 	Quit bool
+	// Dismiss closes the output panel, returning the display to the live
+	// stream. Only acted on when Do is nil: a command with work to do opens a
+	// panel of its own when it finishes, so dismissing first would be undone in
+	// the same breath.
+	//
+	// A field rather than letting Run assign m.result itself. The assignment
+	// would in fact stick -- Run receives the pointer to the very copy execute
+	// returns -- but every other Run only reads through that pointer, and one
+	// that writes turns "a command decides what to do without doing it" from an
+	// invariant into a convention. The next person to restructure execute would
+	// break it silently, and the symptom would be a command that quietly stops
+	// working rather than a compile error.
+	Dismiss bool
 	// Do is the work. Nil when the command answered from state it already had.
 	Do func(ctx context.Context) actionResult
 	// Running is what the status line says while Do is in flight. Required
@@ -432,6 +445,30 @@ func reportLines(rep diag.Report) []string {
 		}
 	}
 	return out
+}
+
+// ---------- display ----------
+
+// runMonitor returns the display to the live stream, which is what Esc does.
+//
+// Deliberately redundant with the key. Nothing on screen says the request
+// stream is still there behind a doctor report -- the panel replaces it
+// wholesale rather than overlaying it -- so an operator who has not memorised
+// Esc has only the command list to look in, and until now the way back was the
+// one thing the list did not offer.
+//
+// The only command here that reaches neither the network nor the filesystem,
+// which is why it needs no Deps guard: there is no build of this program in
+// which it can fail.
+func runMonitor(m *Model, _ []string) actionSpec {
+	if m.result == nil {
+		// Already there. Said out loud rather than returning an empty spec: a
+		// command that appears to do nothing is indistinguishable from one that
+		// silently failed, and this one is most likely to be typed by someone
+		// who is not yet sure what it does.
+		return actionSpec{Note: "已经在监控面板"}
+	}
+	return actionSpec{Dismiss: true}
 }
 
 // ---------- misc ----------

@@ -221,15 +221,19 @@ curl http://127.0.0.1:8317/healthz
 | `/` | 打开命令输入 |
 | `r` | 立刻刷新隧道和凭据状态（不用等轮询） |
 | `q` | 退出（同时停止代理） |
-| `Esc` | 关闭输出面板 |
+| `Esc` | 关闭输出面板，回到实时请求流（也可以打 `/monitor`） |
 | `↑` `↓` | 滚动输出面板 |
 | `Ctrl+C` | 强制退出，任何情况下都有效 |
+
+诊断报告和实时请求流是**互相替换**的，不是叠在一起——报告打开时下面的请求流并没有消失，
+只是被顶掉了。看完报告按 `Esc` 就回去了。
 
 ### 斜杠命令
 
 按 `/` 之后会列出可用命令，边打字边筛：
 
 ```
+   monitor        回到实时请求流（与 Esc 等效）
    tunnel status  查询隧道三态与 Cloudflare 侧连接数
    tunnel up      启动 cloudflared 并等待注册连接
    tunnel down    停止本进程启动的 cloudflared
@@ -240,7 +244,10 @@ curl http://127.0.0.1:8317/healthz
 注意**选中行下面那句话**——破坏性操作会在你按下 Enter 之前告诉你代价。
 `tunnel down` 不是说「停止隧道」，而是说清楚现在有几个连接、停了之后哪个域名会失联。
 
-可用命令：`tunnel status|up|down`、`auth list|rm`、`doctor`、`routes`、`quit`。
+可用命令：`monitor`、`tunnel status|up|down`、`auth list|rm`、`doctor`、`routes`、`quit`。
+
+`monitor` 和 `Esc` 做同一件事，留着两条路是故意的：面板里没有任何地方写着
+「按 Esc 回去」，找不到那个键的时候，命令列表是唯一还能翻的地方。
 
 `auth add` 在面板里**不能用**——它需要浏览器交互。面板会告诉你退出后跑命令行版本。
 

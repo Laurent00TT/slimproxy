@@ -429,12 +429,19 @@ func TestCtrlCAlwaysQuitsImmediately(t *testing.T) {
 func TestEditingTheQueryResetsTheSelection(t *testing.T) {
 	m := sampleModel(90, 30)
 	m, _ = press(t, m, key("/"))
-	for i := 0; i < 8; i++ {
+	// Arrow to the end of the list, however long it happens to be. Counting a
+	// fixed number of keystrokes against a hardcoded landing spot tied this
+	// test to the size of commandSet: adding one command broke it with "预期
+	// quit", a failure about the registry's length reported as a failure about
+	// selection resetting. What the setup needs is a selection far from zero.
+	// Which command sits there was never the subject.
+	all := m.entry.hits
+	for range all {
 		m, _ = press(t, m, special(tea.KeyDown))
 	}
 	before := m.selected()
-	if before == nil || before.Name != "quit" {
-		t.Fatalf("方向键之后选中 %v，预期 quit", before)
+	if want := all[len(all)-1]; before != want {
+		t.Fatalf("方向键之后选中 %v，预期列表末条 %v", before, want)
 	}
 
 	m, _ = press(t, m, key("t"))
