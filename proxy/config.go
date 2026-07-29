@@ -207,7 +207,7 @@ func (c *Config) ConfigRows() []ConfigRow {
 		{K: "max-retry-credentials", V: creds},
 		{K: "models", V: models},
 		{K: "management api", V: i18n.T("已禁用", "disabled"), Warn: true},
-		{K: "plugin host", V: "已禁用", Warn: true},
+		{K: "plugin host", V: i18n.T("已禁用", "disabled"), Warn: true},
 	}
 }
 

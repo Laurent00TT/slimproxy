@@ -115,7 +115,7 @@ func runTunnelStatus(m *Model, _ []string) actionSpec {
 func runTunnelUp(m *Model, _ []string) actionSpec {
 	deps := m.deps
 	if deps.TunnelUp == nil {
-		return actionSpec{Err: errors.New("此构建未接入隧道管理")}
+		return actionSpec{Err: errors.New(i18n.T("此构建未接入隧道管理", "this build has no tunnel management wired in"))}
 	}
 	return actionSpec{
 		Running:       i18n.T("正在启动 cloudflared 并等待连接注册…", "starting cloudflared, waiting for the connection to register…"),
@@ -147,7 +147,7 @@ func runTunnelUp(m *Model, _ []string) actionSpec {
 func runTunnelDown(m *Model, _ []string) actionSpec {
 	deps := m.deps
 	if deps.TunnelDown == nil {
-		return actionSpec{Err: errors.New("此构建未接入隧道管理")}
+		return actionSpec{Err: errors.New(i18n.T("此构建未接入隧道管理", "this build has no tunnel management wired in"))}
 	}
 	return actionSpec{
 		Running:       i18n.T("正在停止 cloudflared…", "stopping cloudflared…"),
@@ -318,7 +318,7 @@ func relTime(t, now time.Time) string {
 func runAuthRemove(m *Model, args []string) actionSpec {
 	deps := m.deps
 	if deps.RemoveCred == nil {
-		return actionSpec{Err: errors.New("此构建未接入凭据管理")}
+		return actionSpec{Err: errors.New(i18n.T("此构建未接入凭据管理", "this build has no credential management wired in"))}
 	}
 	switch len(args) {
 	case 0:

@@ -92,7 +92,7 @@ func init() {
 			name:      "auth",
 			summaryZh: "管理上游凭据（list / add / rm）",
 			summaryEn: "manage upstream credentials (list / add / rm)",
-			usage:     "slimproxy auth <list|add|rm> [参数]",
+			usage:     "slimproxy auth <list|add|rm> [args]",
 			run:       cmdAuth,
 		},
 		{
