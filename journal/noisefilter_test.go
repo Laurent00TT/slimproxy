@@ -40,10 +40,11 @@ func localReject(status int, path string) Event {
 // TestExplicitStatusSearchFindsExternalRejects is the regression.
 //
 // `log -status 401 -since 72h` returned an empty list and a footnote about
-// scanner noise, while the 401s being asked for were inside that count: Noise()
-// looks at Kind and Src and never at the status, so an external 401 and a
-// favicon 404 went into the same bucket. Someone checking whether their key was
-// being probed was told there was nothing to see.
+// scanner noise, while the 401s being asked for were inside that count: every
+// external 4xx reject goes into the same noise bucket regardless of which
+// status the operator asked for, so an external 401 and a favicon 404 were
+// indistinguishable. Someone checking whether their key was being probed was
+// told there was nothing to see.
 func TestExplicitStatusSearchFindsExternalRejects(t *testing.T) {
 	dir := writeEvents(t,
 		externalReject(401, "/v1/messages"), // what the operator is looking for
@@ -154,6 +155,75 @@ func TestSummaryKeepsListedAndHiddenApart(t *testing.T) {
 	}
 	if listed.Rejects != 2 {
 		t.Errorf("Summary.Rejects = %d, want 2", listed.Rejects)
+	}
+}
+
+// TestServerErrorsAreNotNoise is the regression for the 07-29/30 outage
+// review.
+//
+// Every non-2xx response is recorded as a reject, including the proxy's own
+// 5xx answers to real proxied requests -- and Noise() classified every
+// external reject as scan noise regardless of status. During a four-hour
+// upstream outage, 93 tunnel-side 500/502/529 responses to the operator's own
+// traffic were folded into the "scan noise" footnote, and `log -failed`
+// showed nothing. A 5xx is this deployment failing to serve whoever asked;
+// only client-error responses to uninvited traffic are noise.
+func TestServerErrorsAreNotNoise(t *testing.T) {
+	cases := []struct {
+		name  string
+		e     Event
+		noise bool
+	}{
+		{"外部 404 探测", externalReject(404, "/api/hello"), true},
+		{"外部 401 探测", externalReject(401, "/v1/messages"), true},
+		{"外部请求撞上 500", externalReject(500, "/v1/messages"), false},
+		{"外部请求撞上 502", externalReject(502, "/v1/messages"), false},
+		{"外部请求撞上 529", externalReject(529, "/v1/messages"), false},
+		{"本机 404 从来不是噪音", localReject(404, "/typo"), false},
+		{"本机 500 也不是", localReject(500, "/v1/messages"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.e.Noise(); got != tc.noise {
+				t.Errorf("Noise() = %v, want %v", got, tc.noise)
+			}
+		})
+	}
+}
+
+// TestFailedBrowseListsServerErrorRejects walks the incident end to end: the
+// default failure view must show tunnel-side 5xx rejects as rows, while the
+// scanner's 404s stay a footnote count.
+func TestFailedBrowseListsServerErrorRejects(t *testing.T) {
+	dir := writeEvents(t,
+		externalReject(502, "/v1/messages"), // the operator's own request, failed
+		externalReject(529, "/v1/messages"), // upstream overload passed through
+		externalReject(404, "/favicon.ico"), // genuine scanner noise
+		externalReject(404, "/api/hello"),
+	)
+
+	res, err := Read(dir, Query{FailedOnly: true})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(res.Events) != 2 {
+		t.Fatalf("列出 %d 条，want 2：来自隧道的 502/529 是真实失败，不该折进噪音页脚", len(res.Events))
+	}
+	for _, e := range res.Events {
+		if e.Status < 500 {
+			t.Errorf("列出了状态 %d：4xx 探测应该留在噪音计数里", e.Status)
+		}
+	}
+	if res.Noise != 2 {
+		t.Errorf("res.Noise = %d, want 2（只有两条 404 探测）", res.Noise)
+	}
+
+	s := Summarise(res.Events)
+	if s.Rejects != 2 {
+		t.Errorf("Summary.Rejects = %d, want 2", s.Rejects)
+	}
+	if s.Noise != 0 {
+		t.Errorf("Summary.Noise = %d, want 0：5xx 拒绝不该被标成噪音", s.Noise)
 	}
 }
 

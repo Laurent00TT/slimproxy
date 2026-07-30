@@ -206,7 +206,17 @@ func (e Event) Failed() bool { return e.Kind == KindRequest && e.OK != nil && !*
 // rate a measure of the internet's curiosity rather than of this proxy's
 // health, so they are separable -- not discarded, because "how much is being
 // thrown at me" is a real question, just a different one.
-func (e Event) Noise() bool { return e.Kind == KindReject && e.Src != SourceLocal }
+//
+// The status bound is load-bearing. Every non-2xx response is recorded as a
+// reject -- including this proxy's own 5xx answers to real proxied requests,
+// which arrive over the tunnel and so look external. A 4xx says the caller
+// asked for something it shouldn't have; a 5xx says this deployment failed to
+// serve whoever asked, and filing that under "scan noise" is how a four-hour
+// outage's worth of tunnel-side 500/502/529 responses once vanished from the
+// default failure view, visible only as a footnote count.
+func (e Event) Noise() bool {
+	return e.Kind == KindReject && e.Src != SourceLocal && e.Status < 500
+}
 
 // boolPtr is a helper for the OK field, whose absence is meaningful.
 func boolPtr(b bool) *bool { return &b }

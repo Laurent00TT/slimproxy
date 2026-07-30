@@ -49,9 +49,9 @@ type Query struct {
 // The separation is a default-view policy, and it was being applied to
 // deliberate searches as well. `log -status 401 -since 72h` returned an empty
 // list and a footnote about scanner noise -- while the 401s the operator asked
-// for sat in that count, because Noise() looks at Kind and Src and never at the
-// status. Someone checking whether their key was being probed was told nothing
-// was there.
+// for sat in that count, because every external 4xx reject lands in the same
+// noise bucket no matter which status was asked for. Someone checking whether
+// their key was being probed was told nothing was there.
 //
 // So an explicit status turns the policy off. Asking for one status is not
 // browsing; it is looking for something specific, and a filter that quietly
