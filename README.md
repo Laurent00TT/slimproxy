@@ -322,9 +322,14 @@ contract:
 
 ## Configuration notes worth knowing
 
-- **`request-retry: 0` disables retry entirely.** CLIProxyAPI ships no default for it, and
-  the cooldown-aware outer loop is skipped when it is zero. Only `config.example.yaml`
-  suggests 3. It is an outer *attempt cap*, not an HTTP retry count.
+- **`request-retry` is not a failure-retry count — and with one credential it retries
+  nothing.** The outer loop only re-runs a request while some credential is cooling down
+  with a recovery deadline inside `max-retry-interval` (or a 429 carries a compatible
+  `retry-after`). 529 and dial failures never enter cooldown, and the transient-5xx
+  cooldown default (60s) exceeds the suggested 30s interval, so a single-credential
+  deployment attempts every failure class exactly once regardless of the value —
+  measured against v7.2.103, pinned by the `TestUpstreamRetry_*` characterization
+  tests. At 0 the loop is skipped entirely; CLIProxyAPI ships no default for it.
 - **`request-log` writes bodies verbatim.** Redaction is header- and query-name based, and
   the name has to contain `authorization`, `api-key`, `apikey`, `token` or `secret` to
   match — `Cookie` does not, and is written in the clear. Any credential carried in a

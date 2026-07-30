@@ -60,8 +60,10 @@ allow-unauthenticated: false
 auth-dir: %q
 proxy-url: ""
 
-# request-retry is the OUTER attempt cap. At 0 the cooldown-aware retry loop is
-# skipped entirely -- CLIProxyAPI itself ships no default here.
+# request-retry caps waits for cooling credentials (and 429 retry-after), not
+# failure retries: with a single credential every failure is attempted once
+# whatever this says. At 0 the loop is skipped entirely -- CLIProxyAPI itself
+# ships no default here.
 request-retry: 3
 max-retry-interval: 30
 max-retry-credentials: 0

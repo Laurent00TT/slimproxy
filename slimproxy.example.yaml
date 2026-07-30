@@ -28,9 +28,13 @@ proxy-url: ""
 
 # Upstream retry behaviour.
 #
-# request-retry is the OUTER attempt cap, not an HTTP retry count. At 0 the
-# cooldown-aware retry loop is skipped entirely and a request makes a single
-# pass over the credential pool. CLIProxyAPI itself ships no default here.
+# request-retry is NOT a failure-retry count. It caps how many times the outer
+# loop waits for a cooling credential to recover (or honours a 429 retry-after)
+# before giving up. Failures that never enter cooldown -- 529, dial errors --
+# are attempted exactly once whatever this says, and the transient-5xx cooldown
+# default (60s) exceeds max-retry-interval below, so with a single credential
+# no failure class is ever retried. At 0 the loop is skipped entirely.
+# CLIProxyAPI itself ships no default here.
 request-retry: 3
 max-retry-interval: 30
 max-retry-credentials: 0

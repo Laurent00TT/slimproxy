@@ -58,17 +58,24 @@ type Config struct {
 	// Per-credential proxy-url in the credential file overrides this.
 	ProxyURL string `yaml:"proxy-url"`
 
-	// RequestRetry caps outer retry attempts across credentials.
+	// RequestRetry caps how many times the outer loop will wait for a cooling
+	// credential to recover (or honour a 429's retry-after) and try again. It
+	// is NOT a general failure-retry count: the loop only re-runs a request
+	// while some credential sits in a cooldown window whose recovery deadline
+	// fits inside MaxRetryInterval. 529 and dial-class failures never enter
+	// cooldown, and the transient-5xx cooldown default (60s) exceeds the 30s
+	// interval used here -- so with a single credential every failure class is
+	// attempted exactly once regardless of this value. Measured, not inferred:
+	// see the TestUpstreamRetry_* characterization tests.
 	//
-	// CLIProxyAPI ships no default for this: internal/config/config.go:779-793
-	// leaves it zero, and the outer wait-and-retry loop is skipped entirely
-	// when it is zero (conductor.go:4197-4199). Only config.example.yaml
-	// suggests 3. Left at zero here you get single-pass credential iteration
-	// with no cooldown-aware retry.
+	// CLIProxyAPI ships no default for this; at zero the loop is skipped
+	// entirely and even the multi-credential waits above disappear.
 	RequestRetry int `yaml:"request-retry"`
 
 	// MaxRetryInterval bounds, in seconds, how long the retry loop will wait
-	// for a cooling credential before giving up. Zero disables waiting.
+	// for a cooling credential before giving up. Zero disables waiting. Note
+	// the interaction documented on RequestRetry: cooldowns longer than this
+	// bound (like the 60s transient-5xx default) are never waited for.
 	MaxRetryInterval int `yaml:"max-retry-interval"`
 
 	// MaxRetryCredentials caps how many credentials one request may try.

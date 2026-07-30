@@ -279,9 +279,13 @@ err = stream.ReadFrom(ctx, resp.Body, func(frame []byte) error {
 
 ## 值得知道的配置事项
 
-- **`request-retry: 0` 完全关闭重试。** CLIProxyAPI 对它没有默认值，为零时感知
-  冷却的外层循环整个跳过。只有 `config.example.yaml` 建议写 3。它是外层
-  **尝试上限**，不是 HTTP 重试次数。
+- **`request-retry` 不是失败重试次数——单凭据下它什么都不重试。** 外层循环只在
+  「某个凭据正在冷却、且恢复期限落在 `max-retry-interval` 之内」（或 429 带着
+  兼容的 `retry-after`）时才会等待并再试。529 和拨号类失败根本不进冷却，
+  transient 5xx 的默认冷却（60 秒）又超过建议的 30 秒等待上限，所以单凭据部署
+  下每类失败都恰好尝试一次，与这个值无关——对 v7.2.103 实测得出，由
+  `TestUpstreamRetry_*` 特征测试钉住。写 0 则整个循环被跳过；CLIProxyAPI
+  对它没有默认值。
 - **`request-log` 逐字写入请求体。** 脱敏只按 header 和 query 的名字匹配，名字
   里得含 `authorization`、`api-key`、`apikey`、`token` 或 `secret` 才会命中——
   `Cookie` 不含，明文落盘。请求体或响应体里携带的任何凭据都会未脱敏地进日志。
