@@ -4,8 +4,12 @@
 
 First public release.
 
-- Reverse proxy over CLIProxyAPI's SDK: one config file (16 keys),
+- Reverse proxy over CLIProxyAPI's SDK: one config file (18 keys),
   fail-closed inbound auth, management surface pinned off.
+- Streaming responses that go silent are severed after 90s and the caller gets
+  an explicit timeout to retry against, instead of hanging until its own stall
+  detector fires — measured at five to nine minutes per occurrence. On by
+  default; `stream-idle-timeout` tunes or disables it.
 - CLI: `serve`, `check`, `init`, `status`, `doctor`, `auth`, `tunnel`,
   `routes`, `log`, `test`, `version`; full-screen terminal dashboard when run
   on a terminal.

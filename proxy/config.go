@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	cliproxyconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 
@@ -82,6 +83,19 @@ type Config struct {
 	// Zero means unlimited.
 	MaxRetryCredentials int `yaml:"max-retry-credentials"`
 
+	// StreamIdleTimeout is how many seconds a streaming response may go
+	// without a single chunk before the proxy severs it and hands the client
+	// an explicit timeout to retry against. Zero means the 90-second default;
+	// negative disables the guard.
+	//
+	// Exists because of streams that die silently mid-flight (measured
+	// 2026-08-01: a VPN dropping long-lived flows without RST). Upstream keeps
+	// no read deadline of its own, so without this the client waits out its
+	// own stall detector -- five to nine minutes per occurrence. Healthy
+	// streams are never quiet this long: the upstream emits SSE pings through
+	// thinking pauses. See proxy/stallguard.go.
+	StreamIdleTimeout int `yaml:"stream-idle-timeout"`
+
 	// Lang selects the interface language: "zh", "en", or empty to follow the
 	// system locale.
 	//
@@ -138,6 +152,36 @@ type Config struct {
 	// but it does name credentials and hostnames, which is why it is bounded
 	// rather than kept forever.
 	JournalDays int `yaml:"journal-days"`
+}
+
+// StreamIdleSummary renders the stream-idle knob for an operator.
+//
+// Seconds, matching how the knob is written and how every doc describes it --
+// a %s on the duration would print "1m30s" for a default the documentation
+// calls 90s, and no reader should have to reconcile those.
+func (c Config) StreamIdleSummary() string {
+	switch {
+	case c.StreamIdleTimeout < 0:
+		return i18n.T("关闭（流可以无限期挂住）", "off (streams may hang indefinitely)")
+	case c.StreamIdleTimeout == 0:
+		return fmt.Sprintf(i18n.T("%d s（默认）", "%d s (default)"), int(defaultStreamIdle/time.Second))
+	default:
+		return fmt.Sprintf("%d s", c.StreamIdleTimeout)
+	}
+}
+
+// streamIdle resolves the stream-idle knob to a duration. Zero result means
+// the guard is off; the yaml zero value means "use the default", mirroring
+// upstream's transient-cooldown convention where only a negative disables.
+func (c Config) streamIdle() time.Duration {
+	switch {
+	case c.StreamIdleTimeout < 0:
+		return 0
+	case c.StreamIdleTimeout == 0:
+		return defaultStreamIdle
+	default:
+		return time.Duration(c.StreamIdleTimeout) * time.Second
+	}
 }
 
 // orAllInterfaces names the empty host for a message an operator reads.
@@ -201,6 +245,7 @@ func (c *Config) ConfigRows() []ConfigRow {
 	if len(c.APIKeys) == 0 {
 		auth = i18n.T("无（放行一切）", "none (everything admitted)")
 	}
+	stall := c.StreamIdleSummary()
 
 	return []ConfigRow{
 		{K: "listen", V: c.Addr()},
@@ -212,6 +257,7 @@ func (c *Config) ConfigRows() []ConfigRow {
 		{K: "request-retry", V: retry, Warn: c.RequestRetry == 0},
 		{K: "max-retry-interval", V: fmt.Sprintf("%d s", c.MaxRetryInterval)},
 		{K: "max-retry-credentials", V: creds},
+		{K: "stream-idle-timeout", V: stall, Warn: c.StreamIdleTimeout < 0},
 		{K: "models", V: models},
 		{K: "management api", V: i18n.T("已禁用", "disabled"), Warn: true},
 		{K: "plugin host", V: i18n.T("已禁用", "disabled"), Warn: true},

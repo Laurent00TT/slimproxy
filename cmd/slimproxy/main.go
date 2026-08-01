@@ -229,6 +229,10 @@ func printCheck(w io.Writer, cfg *proxy.Config, stateDir string) error {
 	if cfg.RequestRetry == 0 {
 		fmt.Fprint(w, i18n.T("            （request-retry=0 会完全跳过感知冷却的重试循环）\n", "                 (request-retry=0 skips the cooldown-aware retry loop entirely)\n"))
 	}
+	fmt.Fprintf(w, i18n.T("  流看门狗  %s\n", "  stall guard    %s\n"), cfg.StreamIdleSummary())
+	if cfg.StreamIdleTimeout < 0 {
+		fmt.Fprint(w, i18n.T("            （关闭后，静默死亡的流会一直挂到客户端自己放弃）\n", "                 (off: a silently dead stream hangs until the client gives up on its own)\n"))
+	}
 	if len(cfg.Models) == 0 {
 		fmt.Fprint(w, i18n.T("  模型      已加载凭据暴露的全部模型\n", "  models         everything the loaded credentials expose\n"))
 	} else {

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -70,8 +71,13 @@ type Runtime struct {
 	LogDir string
 
 	// auth is the credential pool, captured during router configuration. Nil
-	// until the service has been built.
-	auth *coreauth.Manager
+	// until the service has been built. Atomic because the write happens on
+	// the server's startup goroutine while the stall-guard ticker reads it
+	// from this one.
+	auth atomic.Pointer[coreauth.Manager]
+
+	// streamIdle is the resolved stream stall window; zero disables the guard.
+	streamIdle time.Duration
 
 	// requireKeys records whether this instance started out demanding inbound
 	// authentication. The guard only defends an invariant that existed.
@@ -115,6 +121,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 	// The application log is displaced by the same class of event as the
 	// refusal hooks -- a config reload -- and just as silently. See logpin.go.
 	go keepLogOutputPinned(ctx)
+	// The claude executor is replaced by upstream on every auth update, taking
+	// the stall guard with it -- same decay, same remedy. See stallguard.go.
+	go r.keepStallGuardInstalled(ctx, r.streamIdle)
 
 	// Start and stop go into the same timeline as the requests. Half of
 	// retrospective debugging is noticing that the thing being investigated
@@ -259,7 +268,7 @@ func (r *Runtime) guardInboundAuth(ctx context.Context, stop context.CancelFunc)
 
 // Credentials returns the live credential pool, or nil if the service has not
 // finished assembling.
-func (r *Runtime) Credentials() *coreauth.Manager { return r.auth }
+func (r *Runtime) Credentials() *coreauth.Manager { return r.auth.Load() }
 
 // Run starts the proxy and blocks until ctx is cancelled or the server stops.
 //
@@ -398,7 +407,7 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 	// exposes no getter for it, so anything needing to enumerate or refresh
 	// credentials has to be captured here.
 	rt := &Runtime{ConfigPath: path, LogDir: logDir, Stats: metrics.NewCollector(),
-		requireKeys: len(c.APIKeys) > 0}
+		requireKeys: len(c.APIKeys) > 0, streamIdle: c.streamIdle()}
 
 	// The journal resolves its own directory rather than riding on the
 	// application log's.
@@ -463,7 +472,14 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 
 	builder = builder.WithServerOptions(
 		cliproxyapi.WithRouterConfigurator(func(_ *gin.Engine, h *handlers.BaseAPIHandler, _ *cliproxyconfig.Config) {
-			rt.auth = h.AuthManager
+			rt.auth.Store(h.AuthManager)
+			// Here rather than only from the ticker: this runs while the
+			// router is being assembled, so the guard is in place before the
+			// first request can start a stream. A stream pins its executor
+			// when it starts, so one that begins unguarded stays unguarded
+			// for its whole life -- exactly the multi-minute hang the guard
+			// exists to prevent.
+			ensureStallGuard(h.AuthManager, rt.streamIdle, rt.noteStall)
 		}),
 		// Registered here rather than in the journal branch above, for the same
 		// reason the health tracker is: what is running right now is a property

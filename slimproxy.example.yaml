@@ -39,6 +39,14 @@ request-retry: 3
 max-retry-interval: 30
 max-retry-credentials: 0
 
+# stream-idle-timeout severs a streaming response that has gone this many
+# seconds without a single chunk, handing the client an explicit timeout to
+# retry against. Healthy streams are never quiet this long (the upstream emits
+# SSE pings through thinking pauses); the streams this catches were dead flows
+# that otherwise hung the client for 5-9 minutes. 0 = the 90s default,
+# negative = off.
+stream-idle-timeout: 0
+
 # Diagnostics.
 #
 # request-log writes full request AND response bodies to disk. Bodies are

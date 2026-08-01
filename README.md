@@ -330,6 +330,13 @@ contract:
   deployment attempts every failure class exactly once regardless of the value —
   measured against v7.2.103, pinned by the `TestUpstreamRetry_*` characterization
   tests. At 0 the loop is skipped entirely; CLIProxyAPI ships no default for it.
+- **`stream-idle-timeout` cuts dead streams loose.** A streaming response that sends nothing
+  for the window (90s by default) is severed and the client gets an explicit timeout to retry
+  against. It exists because a stream can die silently mid-flight — no FIN, no RST, no error —
+  and neither upstream nor this proxy had a read deadline, so the client waited out its own
+  stall detector: five to nine minutes per occurrence, measured 2026-08-01. Healthy streams are
+  never quiet that long (the upstream emits SSE pings through thinking pauses). `0` selects the
+  default; a negative value turns the guard off and restores the indefinite hang.
 - **`request-log` writes bodies verbatim.** Redaction is header- and query-name based, and
   the name has to contain `authorization`, `api-key`, `apikey`, `token` or `secret` to
   match — `Cookie` does not, and is written in the clear. Any credential carried in a

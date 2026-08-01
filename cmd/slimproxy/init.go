@@ -68,6 +68,11 @@ request-retry: 3
 max-retry-interval: 30
 max-retry-credentials: 0
 
+# Sever a stream that has sent nothing for this many seconds so the client
+# gets an explicit timeout instead of a multi-minute hang. 0 = 90s default,
+# negative = off.
+stream-idle-timeout: 0
+
 debug: false
 # request-log writes request AND response bodies verbatim. Redaction only
 # covers header names containing authorization, api-key, apikey, token or

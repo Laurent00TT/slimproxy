@@ -286,6 +286,12 @@ err = stream.ReadFrom(ctx, resp.Body, func(frame []byte) error {
   下每类失败都恰好尝试一次，与这个值无关——对 v7.2.103 实测得出，由
   `TestUpstreamRetry_*` 特征测试钉住。写 0 则整个循环被跳过；CLIProxyAPI
   对它没有默认值。
+- **`stream-idle-timeout` 负责切断死掉的流。** 一个流式响应在窗口内（默认 90 秒）一个
+  字节都没发，就会被切断，客户端拿到明确的超时错误可以立刻重试。它存在是因为流会在
+  中途静默死亡——没有 FIN、没有 RST、没有错误——而上游和本代理都没有读超时，于是
+  客户端只能干等到自己的 stall 判定：实测（2026-08-01）每次 5 到 9 分钟。健康的流不会
+  安静这么久（上游在思考停顿期间会发 SSE ping）。写 `0` 表示用默认值，负数关闭看门狗、
+  退回无限期挂起的老行为。
 - **`request-log` 逐字写入请求体。** 脱敏只按 header 和 query 的名字匹配，名字
   里得含 `authorization`、`api-key`、`apikey`、`token` 或 `secret` 才会命中——
   `Cookie` 不含，明文落盘。请求体或响应体里携带的任何凭据都会未脱敏地进日志。
