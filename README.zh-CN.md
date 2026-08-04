@@ -292,6 +292,14 @@ err = stream.ReadFrom(ctx, resp.Body, func(frame []byte) error {
   客户端只能干等到自己的 stall 判定：实测（2026-08-01）每次 5 到 9 分钟。健康的流不会
   安静这么久（上游在思考停顿期间会发 SSE ping）。写 `0` 表示用默认值，负数关闭看门狗、
   退回无限期挂起的老行为。
+- **`stream-early-flush` 把流式请求从 Cloudflare 的 100 秒铡刀下买回来。** 挂在 Cloudflare
+  隧道后面时，源站约 100 秒内不吐响应头就会被斩成 524（免费/Pro 版不可调）——而上游
+  handler 在拿到第一个 chunk 之前一个字节都不写，于是被隧道带宽排队拖住的请求会被边缘
+  杀掉，尽管它们最终多半能成功（仅 2026-08-03 一天就有 129 个请求越过 100 秒线）。超过
+  阈值（默认 30 秒）后代理提前提交 `200, text/event-stream`，用 SSE keep-alive 注释盖住
+  沉默；沉默超过四分钟由看门狗终结。代价只落在慢请求上：预发头之后的失败改以流内 SSE
+  error 事件送达，而不是 HTTP 状态码（也没有 `Retry-After`）。阈值内答复的请求——几乎
+  全部——逐字节原样。写 `0` 表示用默认值，负数关闭。
 - **`request-log` 逐字写入请求体。** 脱敏只按 header 和 query 的名字匹配，名字
   里得含 `authorization`、`api-key`、`apikey`、`token` 或 `secret` 才会命中——
   `Cookie` 不含，明文落盘。请求体或响应体里携带的任何凭据都会未脱敏地进日志。

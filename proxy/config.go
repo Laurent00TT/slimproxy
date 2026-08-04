@@ -96,6 +96,20 @@ type Config struct {
 	// thinking pauses. See proxy/stallguard.go.
 	StreamIdleTimeout int `yaml:"stream-idle-timeout"`
 
+	// StreamEarlyFlush is how many seconds a streaming request may produce no
+	// output before the proxy commits "200, text/event-stream" early and keeps
+	// the connection warm with SSE keep-alive comments. Zero means the
+	// 30-second default; negative disables the preamble.
+	//
+	// Exists because of Cloudflare's ~100-second time-to-first-header limit
+	// (fixed on free/Pro plans): requests queue-bound behind tunnel bandwidth
+	// were being cut down as 524s while their eventual execution would have
+	// succeeded -- 129 crossed 100s on 2026-08-03 alone. The cost is confined
+	// to slow requests: one that fails after the preamble delivers its error
+	// as an in-stream SSE event instead of an HTTP status. See
+	// proxy/earlyflush.go.
+	StreamEarlyFlush int `yaml:"stream-early-flush"`
+
 	// Lang selects the interface language: "zh", "en", or empty to follow the
 	// system locale.
 	//
@@ -184,6 +198,32 @@ func (c Config) streamIdle() time.Duration {
 	}
 }
 
+// StreamEarlyFlushSummary renders the early-flush knob for an operator.
+// Seconds, for the same reason StreamIdleSummary uses them.
+func (c Config) StreamEarlyFlushSummary() string {
+	switch {
+	case c.StreamEarlyFlush < 0:
+		return i18n.T("关闭（慢请求可能被边缘按 ~100s 斩成 524）", "off (slow requests may be severed as 524s at the edge's ~100s)")
+	case c.StreamEarlyFlush == 0:
+		return fmt.Sprintf(i18n.T("%d s（默认）", "%d s (default)"), int(defaultEarlyFlush/time.Second))
+	default:
+		return fmt.Sprintf("%d s", c.StreamEarlyFlush)
+	}
+}
+
+// streamEarlyFlush resolves the early-flush knob to a duration, with the same
+// zero/negative convention as streamIdle.
+func (c Config) streamEarlyFlush() time.Duration {
+	switch {
+	case c.StreamEarlyFlush < 0:
+		return 0
+	case c.StreamEarlyFlush == 0:
+		return defaultEarlyFlush
+	default:
+		return time.Duration(c.StreamEarlyFlush) * time.Second
+	}
+}
+
 // orAllInterfaces names the empty host for a message an operator reads.
 func orAllInterfaces(host string) string {
 	if strings.TrimSpace(host) == "" {
@@ -258,6 +298,7 @@ func (c *Config) ConfigRows() []ConfigRow {
 		{K: "max-retry-interval", V: fmt.Sprintf("%d s", c.MaxRetryInterval)},
 		{K: "max-retry-credentials", V: creds},
 		{K: "stream-idle-timeout", V: stall, Warn: c.StreamIdleTimeout < 0},
+		{K: "stream-early-flush", V: c.StreamEarlyFlushSummary(), Warn: c.StreamEarlyFlush < 0},
 		{K: "models", V: models},
 		{K: "management api", V: i18n.T("已禁用", "disabled"), Warn: true},
 		{K: "plugin host", V: i18n.T("已禁用", "disabled"), Warn: true},

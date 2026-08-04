@@ -337,6 +337,17 @@ contract:
   stall detector: five to nine minutes per occurrence, measured 2026-08-01. Healthy streams are
   never quiet that long (the upstream emits SSE pings through thinking pauses). `0` selects the
   default; a negative value turns the guard off and restores the indefinite hang.
+- **`stream-early-flush` buys streaming requests out of Cloudflare's 100s guillotine.** Behind
+  a Cloudflare tunnel, an origin that shows no response headers within ~100 seconds is severed
+  as a 524 (the limit is fixed on free/Pro plans) — and the upstream handler writes nothing
+  until the first chunk arrives, so requests queue-bound behind tunnel bandwidth were killed
+  while their execution would have succeeded (129 crossed 100s on 2026-08-03 alone). Past the
+  threshold (30s by default) the proxy commits `200, text/event-stream` early and covers the
+  silence with SSE keep-alive comments; a silence past four minutes is ended by a watchdog.
+  The trade is confined to slow requests: one that fails after the preamble delivers its error
+  as an in-stream SSE event instead of an HTTP status (and loses `Retry-After`). Requests
+  answered inside the threshold — nearly all of them — are byte-for-byte untouched. `0`
+  selects the default; a negative value turns the preamble off.
 - **`request-log` writes bodies verbatim.** Redaction is header- and query-name based, and
   the name has to contain `authorization`, `api-key`, `apikey`, `token` or `secret` to
   match — `Cookie` does not, and is written in the clear. Any credential carried in a

@@ -47,6 +47,16 @@ max-retry-credentials: 0
 # negative = off.
 stream-idle-timeout: 0
 
+# stream-early-flush commits "200, text/event-stream" for a streaming request
+# that has produced no output after this many seconds, keeping the connection
+# warm with SSE keep-alive comments until the upstream speaks. Exists for
+# proxies fronted by Cloudflare, whose edge severs any response that shows no
+# headers within ~100 seconds (a 524; the limit is fixed on free/Pro plans).
+# Requests answered inside the threshold are untouched; one that fails after
+# the preamble delivers its error as an in-stream SSE event instead of an
+# HTTP status. 0 = the 30s default, negative = off.
+stream-early-flush: 0
+
 # Diagnostics.
 #
 # request-log writes full request AND response bodies to disk. Bodies are

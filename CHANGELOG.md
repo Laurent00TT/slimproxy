@@ -10,6 +10,12 @@ First public release.
   an explicit timeout to retry against, instead of hanging until its own stall
   detector fires — measured at five to nine minutes per occurrence. On by
   default; `stream-idle-timeout` tunes or disables it.
+- Streaming requests that produce nothing for 30s get their `200,
+  text/event-stream` committed early with SSE keep-alive heartbeats, so a
+  Cloudflare edge in front of the tunnel no longer severs queue-bound requests
+  as 524s at its fixed ~100s header deadline. Failures after the preamble
+  travel as in-stream SSE error events; a four-minute silence watchdog bounds
+  the heartbeat. On by default; `stream-early-flush` tunes or disables it.
 - CLI: `serve`, `check`, `init`, `status`, `doctor`, `auth`, `tunnel`,
   `routes`, `log`, `test`, `version`; full-screen terminal dashboard when run
   on a terminal.

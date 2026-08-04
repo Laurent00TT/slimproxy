@@ -72,6 +72,7 @@ max-retry-credentials: 0
 # gets an explicit timeout instead of a multi-minute hang. 0 = 90s default,
 # negative = off.
 stream-idle-timeout: 0
+stream-early-flush: 0
 
 debug: false
 # request-log writes request AND response bodies verbatim. Redaction only

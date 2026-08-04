@@ -233,6 +233,10 @@ func printCheck(w io.Writer, cfg *proxy.Config, stateDir string) error {
 	if cfg.StreamIdleTimeout < 0 {
 		fmt.Fprint(w, i18n.T("            （关闭后，静默死亡的流会一直挂到客户端自己放弃）\n", "                 (off: a silently dead stream hangs until the client gives up on its own)\n"))
 	}
+	fmt.Fprintf(w, i18n.T("  早刷流头  %s\n", "  early flush    %s\n"), cfg.StreamEarlyFlushSummary())
+	if cfg.StreamEarlyFlush < 0 {
+		fmt.Fprint(w, i18n.T("            （关闭后，排队超过 ~100s 的流式请求会被 Cloudflare 斩成 524）\n", "                 (off: streaming requests queued past ~100s get severed as 524s by Cloudflare)\n"))
+	}
 	if len(cfg.Models) == 0 {
 		fmt.Fprint(w, i18n.T("  模型      已加载凭据暴露的全部模型\n", "  models         everything the loaded credentials expose\n"))
 	} else {

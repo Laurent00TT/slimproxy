@@ -608,6 +608,7 @@ request-retry: 3          # 等待冷却凭据恢复的次数上限（不是失�
 max-retry-interval: 30    # 等待冷却凭据的秒数上限
 max-retry-credentials: 0  # 一个请求最多试几个凭据，0=不限
 stream-idle-timeout: 0    # 流多少秒无数据就切断让客户端重试，0=默认 90s，负数=关闭
+stream-early-flush: 0     # 流式请求多少秒无输出就提前发 200+SSE 头保住连接（防 Cloudflare 524），0=默认 30s，负数=关闭
 
 debug: false          # 提高日志详细度
 request-log: false    # 记录完整请求/响应体（见安全须知）

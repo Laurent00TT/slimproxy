@@ -487,6 +487,15 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 		// `log-to-file: false` silently emptied the dashboard's only live
 		// section.
 		cliproxyapi.WithMiddleware(InFlightMiddleware(rt.Stats.InFlight())),
+		// Last on purpose, so its writer sits closest to the handler: the
+		// journal middlewares behind it read Status() through the wrapper,
+		// which reports the handler's intended status even after the early
+		// 200 is on the wire -- see earlyflush.go.
+		cliproxyapi.WithMiddleware(EarlyFlushMiddleware(c.streamEarlyFlush(), earlyFlushNotes{
+			flushed:    rt.noteEarlyFlush,
+			translated: rt.noteEarlyFlushTranslated,
+			timedOut:   rt.noteEarlyFlushTimeout,
+		})),
 	)
 
 	svc, err := builder.Build()
