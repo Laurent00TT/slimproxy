@@ -24,6 +24,7 @@ import (
 	"github.com/Laurent00TT/slimproxy/fsperm"
 	"github.com/Laurent00TT/slimproxy/journal"
 	"github.com/Laurent00TT/slimproxy/metrics"
+	"github.com/Laurent00TT/slimproxy/outbound"
 
 	// Registers the built-in translator pairs.
 	_ "github.com/Laurent00TT/slimproxy/translate"
@@ -87,6 +88,12 @@ type Runtime struct {
 	Journal *journal.Writer
 	rejects *journal.RejectFolder
 
+	// relay is the adaptive outbound CONNECT relay, present only when
+	// proxy-fallback-direct is on. The engine's proxy address points at it
+	// for the life of the process; it decides per connection whether to
+	// chain through the configured proxy or dial direct.
+	relay *outbound.Relay
+
 	// Health turns runs of failures into something said out loud. Present
 	// regardless of whether journalling is on -- see where it is constructed.
 	Health *metrics.Health
@@ -131,6 +138,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.Note(journal.Event{Kind: journal.KindProxy, State: "start", Detail: r.ConfigPath})
 	defer func() {
 		r.Note(journal.Event{Kind: journal.KindProxy, State: "stop"})
+		r.closeRelay()
 		r.closeJournal()
 	}()
 
@@ -148,6 +156,13 @@ func (r *Runtime) Note(e journal.Event) {
 		return
 	}
 	r.Journal.Append(e)
+}
+
+func (r *Runtime) closeRelay() {
+	if r == nil || r.relay == nil {
+		return
+	}
+	_ = r.relay.Close()
 }
 
 func (r *Runtime) closeJournal() {
@@ -368,10 +383,47 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 		return nil, err
 	}
 
+	// Constructed before the relay so its flip callback can close over rt.
+	// ConfigPath is filled in after materialize. Flips only happen once
+	// connections flow, which is after Build has finished and the journal
+	// (when on) has been attached below.
+	rt := &Runtime{LogDir: logDir, Stats: metrics.NewCollector(),
+		requireKeys: len(c.APIKeys) > 0, streamIdle: c.streamIdle()}
+
+	// The adaptive outbound relay, when asked for. Before materialize, so the
+	// engine -- which resolves its proxy exactly once -- is handed the relay's
+	// address instead of the raw proxy-url, and the per-connection choice
+	// between chaining and dialing direct happens behind an address that never
+	// changes. See the outbound package for why.
+	if c.ProxyURL != "" && c.ProxyFallbackDirect {
+		relay, rerr := outbound.Start(c.ProxyURL, outbound.Options{OnFlip: func(via bool, reason string) {
+			// The reason is the relay's actual failure text, not an
+			// assumption: a port can be listening and still not be an HTTP
+			// proxy, and a journal that says "not listening" for that case
+			// sends the reader to check the wrong thing.
+			detail := fmt.Sprintf(i18n.T("直连（%s：%s）", "direct (%s: %s)"), c.ProxyURL, reason)
+			if via {
+				detail = fmt.Sprintf(i18n.T("经代理 %s（端口在监听）", "via proxy %s (its port is listening)"), c.ProxyURL)
+			}
+			// Both the log and the journal, deliberately: a path switch that
+			// nobody is told about would recreate the exact blind spot this
+			// feature exists to close.
+			log.Infof(i18n.T("slimproxy: 出站路径: %s", "slimproxy: outbound path: %s"), detail)
+			rt.Note(journal.Event{Kind: journal.KindProxy, State: "outbound", Detail: detail})
+		}})
+		if rerr != nil {
+			return nil, fmt.Errorf(i18n.T("slimproxy: 启动自适应出站中继失败: %w", "slimproxy: cannot start the adaptive outbound relay: %w"), rerr)
+		}
+		rt.relay = relay
+		cfg.ProxyURL = relay.URL()
+	}
+
 	path, err := materialize(cfg, stateDir)
 	if err != nil {
+		rt.closeRelay()
 		return nil, err
 	}
+	rt.ConfigPath = path
 
 	builder := cliproxy.NewBuilder().
 		WithConfig(cfg).
@@ -406,9 +458,6 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 	// which a router configurator is the one place that hands it out. Service
 	// exposes no getter for it, so anything needing to enumerate or refresh
 	// credentials has to be captured here.
-	rt := &Runtime{ConfigPath: path, LogDir: logDir, Stats: metrics.NewCollector(),
-		requireKeys: len(c.APIKeys) > 0, streamIdle: c.streamIdle()}
-
 	// The journal resolves its own directory rather than riding on the
 	// application log's.
 	//
@@ -500,6 +549,7 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 
 	svc, err := builder.Build()
 	if err != nil {
+		rt.closeRelay()
 		return nil, fmt.Errorf("slimproxy: build service: %w", err)
 	}
 	rt.Service = svc

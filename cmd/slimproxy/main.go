@@ -16,10 +16,12 @@ import (
 	"os/signal"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/Laurent00TT/slimproxy/i18n"
+	"github.com/Laurent00TT/slimproxy/outbound"
 	"github.com/Laurent00TT/slimproxy/proxy"
 	"github.com/Laurent00TT/slimproxy/translate"
 	"github.com/Laurent00TT/slimproxy/tui"
@@ -236,6 +238,19 @@ func printCheck(w io.Writer, cfg *proxy.Config, stateDir string) error {
 	fmt.Fprintf(w, i18n.T("  早刷流头  %s\n", "  early flush    %s\n"), cfg.StreamEarlyFlushSummary())
 	if cfg.StreamEarlyFlush < 0 {
 		fmt.Fprint(w, i18n.T("            （关闭后，排队超过 ~100s 的流式请求会被 Cloudflare 斩成 524）\n", "                 (off: streaming requests queued past ~100s get severed as 524s by Cloudflare)\n"))
+	}
+	if cfg.ProxyURL != "" {
+		fmt.Fprintf(w, i18n.T("  上游代理  %s\n", "  upstream proxy %s\n"), cfg.ProxyURL)
+		// With the fallback on, "which path right now" is a question the
+		// config alone cannot answer -- so answer it with the same probe the
+		// serving path uses, at check time.
+		if cfg.ProxyFallbackDirect {
+			if outbound.Listening(cfg.ProxyURL, 250*time.Millisecond) {
+				fmt.Fprint(w, i18n.T("            （自适应出站：此刻端口在监听，请求会经代理）\n", "                 (adaptive outbound: the port is listening right now; requests chain through the proxy)\n"))
+			} else {
+				fmt.Fprint(w, i18n.T("            （自适应出站：此刻端口未监听，请求会直连）\n", "                 (adaptive outbound: the port is not listening right now; requests dial direct)\n"))
+			}
+		}
 	}
 	if len(cfg.Models) == 0 {
 		fmt.Fprint(w, i18n.T("  模型      已加载凭据暴露的全部模型\n", "  models         everything the loaded credentials expose\n"))

@@ -26,6 +26,18 @@ auth-dir: "auths"
 # takes precedence over this.
 proxy-url: ""
 
+# Dial upstream directly whenever proxy-url's port has no listener (probed
+# with a short loopback dial, verdict cached ~2s), deciding per connection.
+# For machines that alternate between a system-proxy VPN (proxy required) and
+# a TUN VPN (proxy port dead, direct traffic captured transparently): the
+# switch is followed automatically, no restart needed. Path changes are
+# journalled ("slimproxy log") and "slimproxy check" reports the path the
+# probe would pick right now. Requires a loopback http:// proxy-url. Leave
+# this off if your proxy is an egress policy rather than a reachability
+# workaround -- with it on, a down proxy means traffic goes direct instead of
+# failing.
+proxy-fallback-direct: false
+
 # Upstream retry behaviour.
 #
 # request-retry is NOT a failure-retry count. It caps how many times the outer

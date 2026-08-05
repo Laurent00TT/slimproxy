@@ -14,6 +14,7 @@ import (
 	"github.com/Laurent00TT/slimproxy/credentials"
 	"github.com/Laurent00TT/slimproxy/fsperm"
 	"github.com/Laurent00TT/slimproxy/i18n"
+	"github.com/Laurent00TT/slimproxy/outbound"
 )
 
 // cmdAuth dispatches the auth sub-verbs.
@@ -55,6 +56,10 @@ type authSettings struct {
 	// ProxyURL is the upstream proxy the serving path uses. Login must use the
 	// same one or it reaches the provider directly.
 	ProxyURL string
+	// FallbackDirect mirrors proxy-fallback-direct: the serving path dials
+	// direct when the proxy port has no listener, so login must make the same
+	// call or it fails against a dead port the proxy itself would sidestep.
+	FallbackDirect bool
 }
 
 func authSettingsFor(cx *cliContext) (authSettings, error) {
@@ -66,7 +71,21 @@ func authSettingsFor(cx *cliContext) (authSettings, error) {
 	if err != nil {
 		return authSettings{}, fmt.Errorf(i18n.T("无法解析 auth-dir: %w", "cannot resolve auth-dir: %w"), err)
 	}
-	return authSettings{Dir: dir, ProxyURL: cfg.ProxyURL}, nil
+	return authSettings{Dir: dir, ProxyURL: cfg.ProxyURL, FallbackDirect: cfg.ProxyFallbackDirect}, nil
+}
+
+// loginProxyURL resolves which proxy this login should use, honouring the
+// fallback the serving path applies per connection -- here it is one probe
+// per login, because a login is one short-lived flow, not a stream of
+// connections behind a long-lived relay.
+func loginProxyURL(set authSettings) (proxyURL string, fellBack bool) {
+	if set.ProxyURL == "" || !set.FallbackDirect {
+		return set.ProxyURL, false
+	}
+	if outbound.Listening(set.ProxyURL, 250*time.Millisecond) {
+		return set.ProxyURL, false
+	}
+	return "", true
 }
 
 func cmdAuthList(cx *cliContext, args []string) error {
@@ -219,8 +238,12 @@ func cmdAuthAdd(cx *cliContext, args []string) error {
 	ctx := context.Background()
 
 	fmt.Fprintf(cx.stdout, i18n.T("正在为 %s 启动授权流程，凭据将写入 %s\n", "starting the authorisation flow for %s; the credential lands in %s\n"), provider, set.Dir)
-	if set.ProxyURL != "" {
-		fmt.Fprintf(cx.stdout, i18n.T("经由代理 %s\n", "via proxy %s\n"), set.ProxyURL)
+	proxyURL, fellBack := loginProxyURL(set)
+	switch {
+	case fellBack:
+		fmt.Fprintf(cx.stdout, i18n.T("代理 %s 未监听，本次登录直连（proxy-fallback-direct）\n", "proxy %s is not listening; this login dials direct (proxy-fallback-direct)\n"), set.ProxyURL)
+	case proxyURL != "":
+		fmt.Fprintf(cx.stdout, i18n.T("经由代理 %s\n", "via proxy %s\n"), proxyURL)
 	}
 	if *noBrowser {
 		fmt.Fprint(cx.stdout, i18n.T("（-no-browser：请手动打开下面打印的链接）\n", "(-no-browser: open the link printed below by hand)\n"))
@@ -233,7 +256,7 @@ func cmdAuthAdd(cx *cliContext, args []string) error {
 	path, err := credentials.Login(ctx, credentials.LoginRequest{
 		Provider:     provider,
 		AuthDir:      set.Dir,
-		ProxyURL:     set.ProxyURL,
+		ProxyURL:     proxyURL,
 		NoBrowser:    *noBrowser,
 		CallbackPort: *port,
 		Prompt:       terminalPrompt(cx),

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -58,6 +59,19 @@ type Config struct {
 	// ProxyURL routes upstream traffic through an http/https/socks5 proxy.
 	// Per-credential proxy-url in the credential file overrides this.
 	ProxyURL string `yaml:"proxy-url"`
+
+	// ProxyFallbackDirect dials upstream directly whenever ProxyURL's port has
+	// no listener, deciding per connection rather than per process. For
+	// deployments that alternate between a system-proxy VPN (proxy mandatory)
+	// and a TUN VPN (proxy port dead, direct traffic captured transparently)
+	// -- the same proxy-url is required under one and fatal under the other,
+	// and the engine resolves its proxy once at startup, so no config edit can
+	// follow the switch. See the outbound package for the mechanism.
+	//
+	// Off by default deliberately: for anyone whose proxy is a policy boundary
+	// rather than a reachability workaround, silently dialing direct when the
+	// proxy is down would be an egress-policy bypass, not a convenience.
+	ProxyFallbackDirect bool `yaml:"proxy-fallback-direct"`
 
 	// RequestRetry caps how many times the outer loop will wait for a cooling
 	// credential to recover (or honour a 429's retry-after) and try again. It
@@ -233,6 +247,17 @@ func orAllInterfaces(host string) string {
 }
 
 // isLoopbackHost reports whether the bind address is loopback-only.
+// fallbackProxyIsLoopback answers whether proxy-url names a loopback host.
+// Parse failures read as "not loopback": the relay will refuse the URL at
+// startup anyway, and validation should not vouch for what it cannot parse.
+func fallbackProxyIsLoopback(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return isLoopbackHost(u.Hostname())
+}
+
 func isLoopbackHost(host string) bool {
 	host = strings.TrimSpace(host)
 	if host == "" {
@@ -292,6 +317,7 @@ func (c *Config) ConfigRows() []ConfigRow {
 		{K: "auth-dir", V: dash(c.AuthDir)},
 		{K: "api-keys", V: auth, Warn: len(c.APIKeys) == 0},
 		{K: "proxy-url", V: dash(c.ProxyURL)},
+		{K: "proxy-fallback-direct", V: yesNo(c.ProxyFallbackDirect)},
 		{K: "request-log", V: yesNo(c.RequestLog), Warn: c.RequestLog},
 		{K: "debug", V: yesNo(c.Debug)},
 		{K: "request-retry", V: retry, Warn: c.RequestRetry == 0},
@@ -361,6 +387,32 @@ func (c *Config) Validate() error {
 	}
 	if c.ProxyURL != "" && !strings.Contains(c.ProxyURL, "://") {
 		errs = append(errs, fmt.Errorf("ProxyURL %q needs a scheme (http://, https://, socks5://)", c.ProxyURL))
+	}
+	if c.ProxyFallbackDirect {
+		switch {
+		case c.ProxyURL == "":
+			// A contradiction, not a no-op: the flag says "fall back from the
+			// proxy" and the config names no proxy to fall back from. Someone
+			// removing proxy-url has left a stale flag behind; saying so at
+			// startup beats a setting that silently does nothing.
+			errs = append(errs, errors.New(
+				"proxy-fallback-direct is set but proxy-url is empty: there is no proxy to fall back from; set proxy-url or remove the flag"))
+		case !strings.HasPrefix(c.ProxyURL, "http://"):
+			// The fallback relay chains with a plain HTTP CONNECT. Accepting a
+			// socks5 or https proxy-url here would speak the wrong protocol to
+			// it -- refused at startup rather than discovered per request.
+			errs = append(errs, fmt.Errorf(
+				"proxy-fallback-direct only supports an http:// proxy-url (got %q): the relay probes and chains with a plain CONNECT", c.ProxyURL))
+		case !fallbackProxyIsLoopback(c.ProxyURL):
+			// The probe equates "up" with "TCP dial completes within 250ms",
+			// which is only a faithful reading of "listening" on loopback.
+			// Against a distant proxy, round-trip time alone would read as
+			// absence, and every request would silently go direct -- for a
+			// deployment whose proxy is an egress policy, that is the bypass
+			// the flag's default-off exists to prevent.
+			errs = append(errs, fmt.Errorf(
+				"proxy-fallback-direct requires a loopback proxy-url (got %q): the listen probe is tuned for loopback and would misread a remote proxy's round-trip as \"down\", silently sending traffic direct", c.ProxyURL))
+		}
 	}
 	for i, k := range c.APIKeys {
 		if placeholderAPIKeys[strings.TrimSpace(k)] {
