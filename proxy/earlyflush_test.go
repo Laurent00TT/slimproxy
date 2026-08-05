@@ -135,6 +135,163 @@ func TestEarlyFlushPreambleHeartbeatThenStream(t *testing.T) {
 	}
 }
 
+// slowReader delivers its payload in two halves with a pause between them,
+// modelling a large conversation crawling through the tunnel.
+type slowReader struct {
+	first, rest io.Reader
+	pause       time.Duration
+	paused      bool
+}
+
+func (s *slowReader) Read(p []byte) (int, error) {
+	n, err := s.first.Read(p)
+	if n > 0 || err != io.EOF {
+		return n, err
+	}
+	if !s.paused {
+		s.paused = true
+		time.Sleep(s.pause)
+	}
+	return s.rest.Read(p)
+}
+
+// TestEarlyFlushClockStartsAtArrival: the threshold is measured from the
+// request's start, not from the moment its body finished arriving. Measured
+// 2026-08-05: a 1.8MB body spent 85s of Cloudflare's ~100s window in upload;
+// anchoring the delay at body-complete pushed the preamble to arrival+115s
+// and the edge answered with the exact 524 this middleware exists to
+// prevent. A request whose upload already consumed the threshold must flush
+// as soon as the sniff can rule it streaming, not a full threshold later.
+func TestEarlyFlushClockStartsAtArrival(t *testing.T) {
+	var waited atomic.Int64
+	var flushedAt atomic.Int64
+	start := time.Now()
+	notes := earlyFlushNotes{flushed: func(w time.Duration) {
+		waited.Store(int64(w))
+		flushedAt.Store(int64(time.Since(start)))
+	}}
+
+	body := `{"stream":true}`
+	upload := 3 * earlyFlushTestDelay // the upload alone overshoots the threshold
+
+	r := gin.New()
+	r.Use(EarlyFlushMiddleware(earlyFlushTestDelay, notes))
+	r.POST("/v1/messages", func(c *gin.Context) {
+		time.Sleep(2 * earlyFlushTestDelay) // slow handler; the flush must not wait for it
+		c.Writer.WriteString("event: message_start\ndata: {}\n\n")
+		c.Writer.Flush()
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", &slowReader{
+		first: strings.NewReader(body[:4]),
+		rest:  strings.NewReader(body[4:]),
+		pause: upload,
+	})
+	// httptest.NewRequest cannot know the length of a custom reader, and the
+	// middleware skips bodies with no declared length.
+	req.ContentLength = int64(len(body))
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := time.Duration(waited.Load()); got == 0 {
+		t.Fatal("the preamble never fired for a request whose upload alone crossed the threshold")
+	} else if got < upload {
+		t.Errorf("flushed callback reported %s silence, want >= the %s the upload took (the clock must start at arrival)", got, upload)
+	}
+	// The regression being pinned: with the clock anchored at body-complete,
+	// the flush lands at upload+threshold. Anchored at arrival it must land
+	// essentially at upload-complete. Half a threshold of slack absorbs
+	// scheduler noise while still failing the old behaviour clearly.
+	if got := time.Duration(flushedAt.Load()); got >= upload+earlyFlushTestDelay/2 {
+		t.Errorf("preamble left at %s after arrival, want ~%s (upload end); the threshold was re-added on top of the upload", got, upload)
+	}
+}
+
+// TestEarlyFlushDesperationBeatsSlowUpload: when the body is still uploading
+// at the desperation deadline, the preamble must go out DURING the upload --
+// waiting for the sniff means waiting past the edge's guillotine. Measured
+// 2026-08-05: two uploads outlived the whole ~100s window and both flushes
+// landed on connections the edge had already severed.
+func TestEarlyFlushDesperationBeatsSlowUpload(t *testing.T) {
+	oldD := earlyFlushDesperation
+	earlyFlushDesperation = 60 * time.Millisecond
+	defer func() { earlyFlushDesperation = oldD }()
+
+	var flushedAt atomic.Int64
+	start := time.Now()
+	notes := earlyFlushNotes{flushed: func(time.Duration) { flushedAt.Store(int64(time.Since(start))) }}
+
+	body := `{"stream":true}`
+	upload := 4 * earlyFlushDesperation // the upload alone far outlives the desperation deadline
+
+	r := gin.New()
+	r.Use(EarlyFlushMiddleware(earlyFlushTestDelay, notes))
+	r.POST("/v1/messages", func(c *gin.Context) {
+		c.Writer.WriteString("event: message_start\ndata: {}\n\n")
+		c.Writer.Flush()
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", &slowReader{
+		first: strings.NewReader(body[:4]),
+		rest:  strings.NewReader(body[4:]),
+		pause: upload,
+	})
+	req.ContentLength = int64(len(body))
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	got := time.Duration(flushedAt.Load())
+	if got == 0 {
+		t.Fatal("the preamble never fired")
+	}
+	// The whole point: the flush must land while the body is still arriving,
+	// not after it. Half an upload of slack absorbs scheduler noise while
+	// still failing a body-complete-anchored flush clearly.
+	if got >= upload {
+		t.Errorf("preamble left at %s, after the %s upload finished; desperation must fire during the upload", got, upload)
+	}
+	if !strings.Contains(rec.Body.String(), "event: message_start") {
+		t.Errorf("body %q lost the handler's frame after a desperation flush", rec.Body.String())
+	}
+}
+
+// TestEarlyFlushDesperationNonStreamingSurvives: a non-streaming request
+// whose upload crosses the desperation deadline gets SSE headers on a JSON
+// response -- the request was already lost to the edge either way, and what
+// must NOT happen is a crash, a hang, or the wrapper detaching with
+// committed headers.
+func TestEarlyFlushDesperationNonStreamingSurvives(t *testing.T) {
+	oldD := earlyFlushDesperation
+	earlyFlushDesperation = 60 * time.Millisecond
+	defer func() { earlyFlushDesperation = oldD }()
+
+	body := `{"stream":false}`
+	r := gin.New()
+	r.Use(EarlyFlushMiddleware(earlyFlushTestDelay, earlyFlushNotes{}))
+	r.POST("/v1/messages", func(c *gin.Context) {
+		c.Data(http.StatusOK, "application/json", []byte(`{"id":"msg_1"}`))
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", &slowReader{
+		first: strings.NewReader(body[:4]),
+		rest:  strings.NewReader(body[4:]),
+		pause: 4 * earlyFlushDesperation,
+	})
+	req.ContentLength = int64(len(body))
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want the committed 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Errorf("Content-Type = %q; the desperation preamble should have committed SSE headers", ct)
+	}
+}
+
 // TestEarlyFlushTranslatesLateError: after the preamble, an HTTP failure must
 // arrive as one SSE error event carrying the upstream's own envelope, and
 // Status() must keep reporting the intended status for the journal behind.

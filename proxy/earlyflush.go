@@ -96,6 +96,16 @@ var earlyFlushHeartbeatEvery = 15 * time.Second
 // handler's context so the executor unwinds too. A var only for tests.
 var earlyFlushMaxSilence = 4 * time.Minute
 
+// earlyFlushDesperation is how long an unfinished body upload may run before
+// the preamble goes out without waiting for the sniff.
+//
+// Distinct from the ordinary threshold because it is decided on less
+// information: the ordinary flush knows the request streams, this one only
+// knows the alternative. Sized against the edge's ~100s with enough margin
+// for the preamble to cross the tunnel; a request still uploading at 80s
+// either gets the preamble now or an HTML 524 shortly. A var only for tests.
+var earlyFlushDesperation = 80 * time.Second
+
 // earlyFlushKeepAlive is the exact bytes of one heartbeat.
 //
 // An SSE comment line, not a ping event: comments are defined by the SSE spec
@@ -150,12 +160,62 @@ func EarlyFlushMiddleware(delay time.Duration, notes earlyFlushNotes) gin.Handle
 			c.Next()
 			return
 		}
-		// The body has to be read to see "stream", and reading it here is
-		// also what starts the clock at the right moment: GetRawData returns
-		// only when the last body byte has crossed the tunnel, which is
-		// roughly when the edge's own countdown starts.
+		// The clock starts BEFORE the body is read, because the edge's does.
+		//
+		// The body read originally started the clock, on the assumption that
+		// the last body byte arriving is roughly when the edge starts
+		// counting. Measured on 2026-08-05, it is not: Cloudflare's ~100s
+		// window runs from the request's start, and a 1.8MB conversation
+		// crawling through the tunnel spent 66-96s of that window in upload
+		// alone. Anchoring the threshold at body-complete then added its full
+		// delay on top -- one request flushed at arrival+96s and survived by
+		// 4 seconds, the next flushed at arrival+115s and came back as the
+		// exact 524 this file exists to prevent. The deadline is
+		// arrival+delay; a slow upload eats the wait, and a request whose
+		// upload alone crossed the threshold flushes the moment the sniff can
+		// rule it streaming.
+		entered := time.Now()
+
+		// The writer is built before the body read so the desperation timer
+		// has something to flush through. It is not installed as c.Writer
+		// until the sniff has ruled; until then only the timer goroutine
+		// touches it, and the request goroutine is parked inside GetRawData
+		// -- the same timer-vs-handler discipline the state machine already
+		// enforces, with the handler side silent by construction.
+		reqCtx := c.Request.Context()
+		ctx, cancel := context.WithCancel(reqCtx)
+		w := &earlyFlushWriter{
+			ResponseWriter: c.Writer,
+			notes:          notes,
+			started:        entered,
+			reqCtx:         reqCtx,
+			cancelHandler:  cancel,
+			shadow:         cloneHeader(c.Writer.Header()),
+		}
+		// Desperation: if the body is STILL uploading this close to the
+		// edge's ~100s deadline, commit the preamble without waiting to learn
+		// whether the request streams. Same evening, same journal: two
+		// uploads outlived the whole window (flush at arrival+105s and +121s
+		// -- both into connections the edge had already severed). At this
+		// point the bet is free: a streaming request is saved outright, and a
+		// non-streaming one was going to die as a 524 anyway -- SSE headers
+		// on its eventual JSON are a different spelling of the same loss, on
+		// a request class (large POST /v1/messages bodies) that in practice
+		// always streams.
+		w.timer = time.AfterFunc(earlyFlushDesperation, w.flushNow)
+
 		body, err := c.GetRawData()
 		if err != nil {
+			if !w.tryDisarm() {
+				// The preamble is already on the wire for a body that never
+				// finished arriving; end the stream honestly rather than
+				// handing the handler a broken body behind committed headers.
+				w.finish()
+				cancel()
+				c.Abort()
+				return
+			}
+			cancel()
 			c.Next()
 			return
 		}
@@ -165,25 +225,30 @@ func EarlyFlushMiddleware(delay time.Duration, notes earlyFlushNotes) gin.Handle
 		// non-streaming while the upstream streams it, leaving that request
 		// unprotected.
 		if s := gjson.GetBytes(body, "stream"); !s.Exists() || s.Type == gjson.False {
-			c.Next()
-			return
+			if w.tryDisarm() {
+				cancel()
+				c.Next()
+				return
+			}
+			// Desperation already committed SSE headers for what turned out
+			// to be a non-streaming request. There is no un-sending them; the
+			// wrapper stays installed so the teardown machinery -- heartbeat,
+			// watchdog, finish -- runs, and the response is delivered inside
+			// the stream. The alternative this replaced was the edge's 524.
 		}
 
 		// The derived context is the watchdog's lever: cancelling it is what
 		// makes a wedged executor unwind after the stream has been ended.
-		reqCtx := c.Request.Context()
-		ctx, cancel := context.WithCancel(reqCtx)
 		c.Request = c.Request.WithContext(ctx)
 
-		w := &earlyFlushWriter{
-			ResponseWriter: c.Writer,
-			notes:          notes,
-			started:        time.Now(),
-			reqCtx:         reqCtx,
-			cancelHandler:  cancel,
-			shadow:         cloneHeader(c.Writer.Header()),
+		// What is left of the threshold after the upload; zero fires the
+		// flush immediately on the timer goroutine, through the same state
+		// machine as a normal expiry. A no-op when desperation already fired.
+		remaining := delay - time.Since(entered)
+		if remaining < 0 {
+			remaining = 0
 		}
-		w.timer = time.AfterFunc(delay, w.flushNow)
+		w.rearm(remaining)
 		c.Writer = w
 		// Deferred, not sequenced: a panicking handler must still tear the
 		// timer and heartbeat down, or they outlive the request and write
@@ -287,6 +352,36 @@ func (w *earlyFlushWriter) Header() http.Header {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.shadow
+}
+
+// tryDisarm retires a writer that was never installed: the timer is stopped
+// and the tombstone set, so a concurrent fire finds nothing to do. Returns
+// false when the preamble is already out -- committed headers cannot be
+// retired, and the caller must keep the wrapper on the request.
+func (w *earlyFlushWriter) tryDisarm() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.preflushed {
+		return false
+	}
+	w.closed = true
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+	return true
+}
+
+// rearm replaces the desperation deadline with what is left of the real
+// threshold, once the sniff has ruled the request streaming. A no-op when
+// the preamble already went out -- there is nothing left to schedule.
+func (w *earlyFlushWriter) rearm(d time.Duration) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed || w.preflushed {
+		return
+	}
+	w.timer.Stop()
+	w.timer = time.AfterFunc(d, w.flushNow)
 }
 
 // flushNow is the timer callback: commit the preamble if the handler has not
