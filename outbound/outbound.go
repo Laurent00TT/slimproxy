@@ -332,11 +332,27 @@ func (r *Relay) handle(c net.Conn) {
 	r.direct(c, br, hostport)
 }
 
+// directDialRetryDelay is the pause before the direct path's one retry.
+// A var only so tests can shorten it.
+var directDialRetryDelay = 250 * time.Millisecond
+
 // direct dials the origin and splices. Under a TUN VPN the dial is captured
 // transparently; with no VPN at all it reaches the provider bare and is
 // refused there, which is the honest outcome -- there was no working path.
+//
+// A failed dial gets exactly one retry after a beat. Measured 2026-08-06
+// under the TUN VPN: 67 dial failures against ~1100 successes in an
+// afternoon, arriving as scattered singles -- the signature of transient
+// churn in the VPN's capture path, not of a dead route. A dial carries no
+// request bytes, so retrying it cannot duplicate anything, and this is the
+// only place the retry can live: the upstream engine attempts each dial
+// once per credential and gives the failure straight to the caller.
 func (r *Relay) direct(c net.Conn, br *bufio.Reader, hostport string) {
 	up, err := net.DialTimeout("tcp", hostport, r.opt.DialTimeout)
+	if err != nil {
+		time.Sleep(directDialRetryDelay)
+		up, err = net.DialTimeout("tcp", hostport, r.opt.DialTimeout)
+	}
 	if err != nil {
 		respond(c, "502 upstream dial failed")
 		_ = c.Close()

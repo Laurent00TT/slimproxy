@@ -455,3 +455,86 @@ func TestNoFlipAfterClose(t *testing.T) {
 		t.Errorf("OnFlip fired after Close (%d -> %d flips); in production this is a panic into a closed journal", before, after)
 	}
 }
+
+// startOriginOn is startOrigin pinned to a specific address, for tests that
+// need the origin to appear at an address the relay has already failed to
+// dial.
+func startOriginOn(t *testing.T, addr string) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				buf := make([]byte, 4)
+				if _, err := io.ReadFull(c, buf); err != nil {
+					return
+				}
+				if string(buf) == "ping" {
+					_, _ = c.Write([]byte("pong"))
+				}
+			}(c)
+		}
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+	return ln
+}
+
+// TestDirectDialRetriesTransientFailure: a dial that fails once and would
+// succeed a beat later must succeed through the relay's single retry.
+// Measured 2026-08-06 under the TUN VPN: 67 scattered dial failures against
+// ~1100 successes in an afternoon -- transient churn, exactly one beat wide.
+func TestDirectDialRetriesTransientFailure(t *testing.T) {
+	oldDelay := directDialRetryDelay
+	directDialRetryDelay = 200 * time.Millisecond
+	defer func() { directDialRetryDelay = oldDelay }()
+
+	// A real free port with nothing listening yet: the first dial is refused.
+	target := freePort(t)
+	var flips flipLog
+	relay, err := Start("http://"+freePort(t), Options{OnFlip: flips.add})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+
+	// The origin appears during the retry pause.
+	go func() {
+		time.Sleep(80 * time.Millisecond)
+		startOriginOn(t, target)
+	}()
+
+	c, status := connectThrough(t, relay, target)
+	defer c.Close()
+	if !strings.Contains(status, "200") {
+		t.Fatalf("CONNECT status %q, want 200——一次重试本该救回这个瞬时失败", status)
+	}
+	pingPong(t, c)
+}
+
+// TestDirectDialStillFailsWhenTargetStaysDead: the retry must not change the
+// outcome for a genuinely dead target -- one extra beat, then the honest 502.
+func TestDirectDialStillFailsWhenTargetStaysDead(t *testing.T) {
+	oldDelay := directDialRetryDelay
+	directDialRetryDelay = 50 * time.Millisecond
+	defer func() { directDialRetryDelay = oldDelay }()
+
+	target := freePort(t) // nothing ever listens here
+	relay, err := Start("http://"+freePort(t), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+
+	_, status := connectThrough(t, relay, target)
+	if !strings.Contains(status, "502") {
+		t.Fatalf("CONNECT status %q, want 502 for a dead target", status)
+	}
+}

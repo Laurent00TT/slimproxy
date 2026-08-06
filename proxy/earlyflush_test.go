@@ -101,7 +101,7 @@ func TestEarlyFlushPreambleHeartbeatThenStream(t *testing.T) {
 	defer func() { earlyFlushHeartbeatEvery = old }()
 
 	var waited atomic.Int64
-	notes := earlyFlushNotes{flushed: func(w time.Duration) { waited.Store(int64(w)) }}
+	notes := earlyFlushNotes{flushed: func(w time.Duration, _ streamVerdict) { waited.Store(int64(w)) }}
 	chunk := "event: message_start\ndata: {\"type\":\"message_start\"}\n\n"
 	rec := serveEarlyFlush(t, earlyFlushTestDelay, notes, `{"stream":true}`, func(c *gin.Context) {
 		time.Sleep(4 * earlyFlushTestDelay)
@@ -166,7 +166,7 @@ func TestEarlyFlushClockStartsAtArrival(t *testing.T) {
 	var waited atomic.Int64
 	var flushedAt atomic.Int64
 	start := time.Now()
-	notes := earlyFlushNotes{flushed: func(w time.Duration) {
+	notes := earlyFlushNotes{flushed: func(w time.Duration, _ streamVerdict) {
 		waited.Store(int64(w))
 		flushedAt.Store(int64(time.Since(start)))
 	}}
@@ -221,7 +221,7 @@ func TestEarlyFlushDesperationBeatsSlowUpload(t *testing.T) {
 
 	var flushedAt atomic.Int64
 	start := time.Now()
-	notes := earlyFlushNotes{flushed: func(time.Duration) { flushedAt.Store(int64(time.Since(start))) }}
+	notes := earlyFlushNotes{flushed: func(time.Duration, streamVerdict) { flushedAt.Store(int64(time.Since(start))) }}
 
 	body := `{"stream":true}`
 	upload := 4 * earlyFlushDesperation // the upload alone far outlives the desperation deadline
@@ -259,36 +259,122 @@ func TestEarlyFlushDesperationBeatsSlowUpload(t *testing.T) {
 	}
 }
 
-// TestEarlyFlushDesperationNonStreamingSurvives: a non-streaming request
-// whose upload crosses the desperation deadline gets SSE headers on a JSON
-// response -- the request was already lost to the edge either way, and what
-// must NOT happen is a crash, a hang, or the wrapper detaching with
-// committed headers.
-func TestEarlyFlushDesperationNonStreamingSurvives(t *testing.T) {
+// TestEarlyFlushDesperationHoldsForProvenNonStreaming: when the prefix has
+// already said stream:false at the desperation deadline, the preamble must be
+// WITHHELD and the JSON response delivered untouched. SSE headers here would
+// not degrade the response but destroy it -- the client's non-streaming call
+// parses JSON and reports "empty or malformed response (HTTP 200)", the
+// unretryable error measured on 2026-08-06 against Claude Code's
+// non-streaming fallback (9 large stream:false bodies in one afternoon).
+func TestEarlyFlushDesperationHoldsForProvenNonStreaming(t *testing.T) {
 	oldD := earlyFlushDesperation
 	earlyFlushDesperation = 60 * time.Millisecond
 	defer func() { earlyFlushDesperation = oldD }()
 
-	body := `{"stream":false}`
+	var held atomic.Int64
+	var flushes atomic.Int64
+	notes := earlyFlushNotes{
+		flushed:         func(time.Duration, streamVerdict) { flushes.Add(1) },
+		desperationHeld: func(time.Duration) { held.Add(1) },
+	}
+
+	// The prefix that arrives instantly carries the complete stream:false;
+	// the rest of the body crawls in far past the desperation deadline.
+	body := `{"stream":false,"messages":[{"role":"user","content":"hello"}]}`
 	r := gin.New()
-	r.Use(EarlyFlushMiddleware(earlyFlushTestDelay, earlyFlushNotes{}))
+	r.Use(EarlyFlushMiddleware(earlyFlushTestDelay, notes))
 	r.POST("/v1/messages", func(c *gin.Context) {
 		c.Data(http.StatusOK, "application/json", []byte(`{"id":"msg_1"}`))
 	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", &slowReader{
-		first: strings.NewReader(body[:4]),
-		rest:  strings.NewReader(body[4:]),
+		first: strings.NewReader(body[:len(`{"stream":false,`)]),
+		rest:  strings.NewReader(body[len(`{"stream":false,`):]),
 		pause: 4 * earlyFlushDesperation,
 	})
 	req.ContentLength = int64(len(body))
 	r.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want the committed 200", rec.Code)
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want JSON——预发头会把非流式响应毁成客户端的 malformed 200", ct)
+	}
+	if got := rec.Body.String(); got != `{"id":"msg_1"}` {
+		t.Errorf("body = %q，非流式响应必须原样送达", got)
+	}
+	if held.Load() != 1 {
+		t.Errorf("desperationHeld 上报了 %d 次，want 1——按兵不动也必须留痕", held.Load())
+	}
+	if flushes.Load() != 0 {
+		t.Errorf("flushed 上报了 %d 次，want 0", flushes.Load())
+	}
+}
+
+// TestEarlyFlushDesperationBetsOnUnknownPrefix: when the stream field has not
+// arrived by the desperation deadline, the preamble still goes out -- the
+// residual bet -- and the flushed note says verdictUnknown, which is how the
+// journal sizes the residue. A non-streaming request whose stream field trails
+// the body will still be hurt here; the note is what proves how often.
+func TestEarlyFlushDesperationBetsOnUnknownPrefix(t *testing.T) {
+	oldD := earlyFlushDesperation
+	earlyFlushDesperation = 60 * time.Millisecond
+	defer func() { earlyFlushDesperation = oldD }()
+
+	var sawVerdict atomic.Int64
+	sawVerdict.Store(-1)
+	notes := earlyFlushNotes{
+		flushed: func(_ time.Duration, v streamVerdict) { sawVerdict.Store(int64(v)) },
+	}
+
+	// stream trails the messages array: the instant prefix has no verdict.
+	body := `{"messages":[{"role":"user","content":"hello"}],"stream":true}`
+	r := gin.New()
+	r.Use(EarlyFlushMiddleware(earlyFlushTestDelay, notes))
+	r.POST("/v1/messages", func(c *gin.Context) {
+		c.Writer.WriteString("event: message_start\ndata: {}\n\n")
+		c.Writer.Flush()
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", &slowReader{
+		first: strings.NewReader(body[:20]),
+		rest:  strings.NewReader(body[20:]),
+		pause: 4 * earlyFlushDesperation,
+	})
+	req.ContentLength = int64(len(body))
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
-		t.Errorf("Content-Type = %q; the desperation preamble should have committed SSE headers", ct)
+		t.Errorf("Content-Type = %q; 前缀未见 stream 字段时 desperation 仍要按流式赌", ct)
+	}
+	if got := streamVerdict(sawVerdict.Load()); got != verdictUnknown {
+		t.Errorf("flushed 报的判定 = %v, want verdictUnknown——journal 靠它统计残余赌注", got)
+	}
+}
+
+// TestSniffStreamField pins the three-state prefix predicate.
+func TestSniffStreamField(t *testing.T) {
+	cases := []struct {
+		name   string
+		prefix string
+		want   streamVerdict
+	}{
+		{"完整 stream:true", `{"stream":true,"messages":[`, verdictStreaming},
+		{"完整 stream:false", `{"stream":false,"messages":[`, verdictNonStreaming},
+		{"stream:1 非 false 即流式（上游谓词）", `{"stream":1,"messages":[`, verdictStreaming},
+		{"键还没到", `{"messages":[{"role":"user","content":"hi"}`, verdictUnknown},
+		{"空前缀", ``, verdictUnknown},
+		{"字符串内容里的 stream 文本不算", `{"messages":[{"role":"user","content":"set \"stream\":false please"}],"model":"m"`, verdictUnknown},
+		{"嵌套对象里的 stream 不算", `{"metadata":{"stream":false},"messages":[`, verdictUnknown},
+	}
+	for _, tc := range cases {
+		if got := sniffStreamField([]byte(tc.prefix)); got != tc.want {
+			t.Errorf("%s: sniffStreamField(%q) = %v, want %v", tc.name, tc.prefix, got, tc.want)
+		}
 	}
 }
 

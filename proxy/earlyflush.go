@@ -132,14 +132,107 @@ const earlyFlushMaxSniff = 32 << 20
 // and the journal wiring lives with Runtime's other dependencies.
 type earlyFlushNotes struct {
 	// flushed fires when the preamble goes out: a request that would
-	// otherwise have been at the edge's mercy is now safe.
-	flushed func(wait time.Duration)
+	// otherwise have been at the edge's mercy is now safe. verdict says what
+	// the body had established about streaming at that moment --
+	// verdictStreaming when the sniff (full or prefix) had proven it,
+	// verdictUnknown when desperation fired before the stream field arrived
+	// and the preamble went out on the odds.
+	flushed func(wait time.Duration, verdict streamVerdict)
+	// desperationHeld fires when the desperation deadline passed on a body
+	// whose prefix had already said stream:false -- the preamble is WITHHELD.
+	// SSE headers on a JSON response do not degrade it, they destroy it: the
+	// client's non-streaming call parses the body as JSON and reports
+	// "empty or malformed response (HTTP 200)", an error it cannot retry
+	// around, where the 524 this risks is an honest failure retried
+	// automatically. Measured 2026-08-06: Claude Code's non-streaming
+	// fallback sends exactly these large stream:false bodies, ~9 per
+	// afternoon through the slow tunnel.
+	desperationHeld func(wait time.Duration)
 	// translated fires when a post-preamble failure is delivered as an
 	// in-stream error event instead of its HTTP status.
 	translated func(status int)
 	// timedOut fires when the silence watchdog ends a stream the upstream
 	// never spoke on.
 	timedOut func(silence time.Duration)
+}
+
+// streamVerdict is what the request body has established about streaming.
+type streamVerdict int
+
+const (
+	// verdictUnknown: the stream field has not arrived yet (or never will).
+	verdictUnknown streamVerdict = iota
+	// verdictStreaming: the field exists and is not literal false -- the
+	// upstream handler's own predicate.
+	verdictStreaming
+	// verdictNonStreaming: the field exists and is literal false.
+	verdictNonStreaming
+)
+
+// sniffStreamField applies the upstream's streaming predicate to however much
+// of the body has arrived.
+//
+// gjson tolerates the truncation: a top-level field that is complete in the
+// prefix is found, one that is still in flight is not (verdictUnknown, the
+// safe answer). String contents cannot fool it on an intact prefix -- gjson
+// parses structure, so a conversation that merely mentions "stream":false
+// stays a string. A prefix cut mid-string could in principle misalign the
+// scan, but the failure modes are a withheld preamble (a 524 instead of a
+// save) or a preamble on the odds (today's behavior), never a crash.
+func sniffStreamField(prefix []byte) streamVerdict {
+	s := gjson.GetBytes(prefix, "stream")
+	switch {
+	case !s.Exists():
+		return verdictUnknown
+	case s.Type == gjson.False:
+		return verdictNonStreaming
+	default:
+		return verdictStreaming
+	}
+}
+
+// bodySniffer accumulates the request body while letting the desperation
+// timer read a consistent prefix mid-upload.
+//
+// It exists because the desperation decision used to be made with no body at
+// all -- the handler goroutine was parked inside GetRawData, and the timer
+// fired blind, betting that every large body streams. Claude Code's
+// non-streaming fallback lost that bet (see earlyFlushNotes.desperationHeld);
+// buffering the upload here is what gives the timer something to look at.
+type bodySniffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+// readAll drains r into the buffer and returns the complete body.
+func (s *bodySniffer) readAll(r io.Reader) ([]byte, error) {
+	chunk := make([]byte, 32<<10)
+	for {
+		n, err := r.Read(chunk)
+		if n > 0 {
+			s.mu.Lock()
+			s.buf.Write(chunk[:n])
+			s.mu.Unlock()
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Bytes(), nil
+}
+
+// verdict reports what the bytes so far say about streaming. Called from the
+// timer goroutine; the scan runs under the lock, briefly pausing the upload
+// copy loop, which at one call per request is noise.
+func (s *bodySniffer) verdict() streamVerdict {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return sniffStreamField(s.buf.Bytes())
 }
 
 // EarlyFlushMiddleware wraps streaming /v1/messages requests with the early
@@ -193,18 +286,26 @@ func EarlyFlushMiddleware(delay time.Duration, notes earlyFlushNotes) gin.Handle
 			shadow:         cloneHeader(c.Writer.Header()),
 		}
 		// Desperation: if the body is STILL uploading this close to the
-		// edge's ~100s deadline, commit the preamble without waiting to learn
-		// whether the request streams. Same evening, same journal: two
-		// uploads outlived the whole window (flush at arrival+105s and +121s
-		// -- both into connections the edge had already severed). At this
-		// point the bet is free: a streaming request is saved outright, and a
-		// non-streaming one was going to die as a 524 anyway -- SSE headers
-		// on its eventual JSON are a different spelling of the same loss, on
-		// a request class (large POST /v1/messages bodies) that in practice
-		// always streams.
+		// edge's ~100s deadline, commit the preamble without waiting for the
+		// full sniff. Same evening, same journal: two uploads outlived the
+		// whole window (flush at arrival+105s and +121s -- both into
+		// connections the edge had already severed).
+		//
+		// But no longer blind. The original bet -- "large POST /v1/messages
+		// bodies always stream, so SSE headers on a JSON response are just a
+		// different spelling of the same loss" -- was measurably wrong on both
+		// counts: Claude Code's non-streaming fallback sends large
+		// stream:false bodies (9 in one afternoon of 2026-08-06), and SSE
+		// headers are not a different spelling of a 524 but strictly worse --
+		// the 524 is an honest retryable failure, the SSE-wrapped JSON is
+		// "empty or malformed response (HTTP 200)". So the upload is now
+		// buffered where the timer can see it, and flushNow consults the
+		// prefix: a proven stream:false holds fire.
+		sniff := &bodySniffer{}
+		w.sniffVerdict = sniff.verdict
 		w.timer = time.AfterFunc(earlyFlushDesperation, w.flushNow)
 
-		body, err := c.GetRawData()
+		body, err := sniff.readAll(c.Request.Body)
 		if err != nil {
 			if !w.tryDisarm() {
 				// The preamble is already on the wire for a body that never
@@ -297,6 +398,11 @@ type earlyFlushWriter struct {
 
 	mu    sync.Mutex
 	timer *time.Timer
+	// sniffVerdict asks the in-flight body what it has said about streaming.
+	// Set for the desperation window only; rearm clears it once the full
+	// sniff has ruled the request streaming, after which a firing needs no
+	// second opinion.
+	sniffVerdict func() streamVerdict
 	// shadow is the only header map the handler ever sees. Its contents move
 	// to the real map under mu by whichever call transmits first; after the
 	// preamble it is a decoy, absorbing header writes that can no longer
@@ -380,6 +486,9 @@ func (w *earlyFlushWriter) rearm(d time.Duration) {
 	if w.closed || w.preflushed {
 		return
 	}
+	// The full body has been sniffed and ruled streaming; a later firing
+	// needs no prefix consultation, and the sniffer can be collected.
+	w.sniffVerdict = nil
 	w.timer.Stop()
 	w.timer = time.AfterFunc(d, w.flushNow)
 }
@@ -390,6 +499,21 @@ func (w *earlyFlushWriter) flushNow() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed || w.decided || w.preflushed {
+		return
+	}
+	verdict := verdictStreaming
+	if w.sniffVerdict != nil {
+		verdict = w.sniffVerdict()
+	}
+	if verdict == verdictNonStreaming {
+		// The prefix has already said stream:false. Hold fire: the preamble
+		// would turn this request's JSON response into the client's
+		// unretryable "malformed response (HTTP 200)", while doing nothing
+		// leaves at worst an honest, retryable 524. The timer is spent; the
+		// finished sniff will disarm the wrapper through the ordinary path.
+		if w.notes.desperationHeld != nil {
+			w.notes.desperationHeld(time.Since(w.started))
+		}
 		return
 	}
 	w.preflushed = true
@@ -407,7 +531,7 @@ func (w *earlyFlushWriter) flushNow() {
 	w.ResponseWriter.Flush()
 
 	if w.notes.flushed != nil {
-		w.notes.flushed(time.Since(w.started))
+		w.notes.flushed(time.Since(w.started), verdict)
 	}
 
 	w.hbStop = make(chan struct{})
@@ -636,7 +760,27 @@ func sseErrorFrame(status int, body []byte) []byte {
 // wrapper, and so the journal dependency lives with the rest of Runtime's --
 // the same split noteStall uses, and for the same reason: the save must be
 // self-reported, because nothing downstream knows it happened.
-func (r *Runtime) noteEarlyFlush(wait time.Duration) {
+func (r *Runtime) noteEarlyFlush(wait time.Duration, verdict streamVerdict) {
+	if r == nil {
+		return
+	}
+	detail := fmt.Sprintf(i18n.T(
+		"流式请求 %s 无输出，已提前发送 SSE 响应头保住连接（否则会被边缘按 ~100s 斩成 524）",
+		"streaming request silent for %s; SSE preamble sent early to keep the connection (the edge would sever it as a 524 at ~100s)"), wait.Round(time.Second))
+	if verdict == verdictUnknown {
+		// The distinction matters for the audit trail: an unknown-verdict
+		// flush onto what turns out non-streaming is the one residual way a
+		// JSON response can still end up behind SSE headers, and finding
+		// those cases is how the residue gets sized.
+		detail = fmt.Sprintf(i18n.T(
+			"请求上传 %s 仍未完成，desperation 预发 SSE 头（前缀尚未出现 stream 字段，按流式赌——若实为非流式，客户端会报 malformed 200）",
+			"request still uploading after %s; desperation preamble sent (no stream field in the prefix yet, betting on streaming -- a non-streaming request would surface as the client's malformed 200)"), wait.Round(time.Second))
+	}
+	r.Note(journal.Event{Kind: journal.KindHealth, State: "earlyflush", Detail: detail})
+}
+
+// noteDesperationHeld records a withheld desperation preamble.
+func (r *Runtime) noteDesperationHeld(wait time.Duration) {
 	if r == nil {
 		return
 	}
@@ -644,8 +788,8 @@ func (r *Runtime) noteEarlyFlush(wait time.Duration) {
 		Kind:  journal.KindHealth,
 		State: "earlyflush",
 		Detail: fmt.Sprintf(i18n.T(
-			"流式请求 %s 无输出，已提前发送 SSE 响应头保住连接（否则会被边缘按 ~100s 斩成 524）",
-			"streaming request silent for %s; SSE preamble sent early to keep the connection (the edge would sever it as a 524 at ~100s)"), wait.Round(time.Second)),
+			"非流式请求上传 %s 仍未完成；前缀已见 stream:false，按兵不动（SSE 预发头会把 JSON 响应毁成客户端不可重试的 malformed 200，宁可让它冒 524 的险）",
+			"non-streaming request still uploading after %s; the prefix says stream:false, so the preamble is withheld (SSE headers would destroy the JSON response into the client's unretryable malformed 200 -- risking a 524 is the better loss)"), wait.Round(time.Second)),
 	})
 }
 
