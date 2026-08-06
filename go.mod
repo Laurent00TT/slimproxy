@@ -94,3 +94,5 @@ require (
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/protobuf v1.34.1 // indirect
 )
+
+replace github.com/router-for-me/CLIProxyAPI/v7 => ./third_party/CLIProxyAPI
