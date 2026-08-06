@@ -39,8 +39,20 @@ package proxy
 // bounded by stallGuardInterval, and every stream that starts inside one runs
 // unguarded until it ends -- streams pin their executor at start, so the cost
 // is however many streams begin in that window, not one.
+//
+// Since 2026-08-06 the pump also keeps the books on how a stream ENDED. The
+// upstream SDK's stream reporter publishes a usage record only when it scans a
+// line carrying a top-level usage field (the tail message_delta) or hits a
+// scanner error; a stream that ends cleanly before that line produces no usage
+// record and no journal event at all, while the access log records a 200 --
+// two such requests were found in two days of logs, findable only by
+// cross-auditing the two files. The pump watches the same signal the SDK does
+// and self-reports the silent endings: "notail" when the stream closed without
+// the tail, "clientdrop" when the request side hung up while the upstream was
+// still open. See stallGuardNotes.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -51,6 +63,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 
 	"github.com/Laurent00TT/slimproxy/i18n"
 	"github.com/Laurent00TT/slimproxy/journal"
@@ -94,27 +107,55 @@ var stallGuardMismatchWarnEvery = time.Hour
 // errStreamStalled is the chunk error a severed stream ends with.
 //
 // This reaches the caller's SSE error frame and nothing else. It does NOT
-// reach the usage pipeline, and an earlier version of this comment claiming
-// otherwise was wrong: severing works by cancelling the upstream context, so
-// the inner executor's own reporter publishes the resulting "context
-// canceled", and metrics files the request under CauseCanceled -- the bucket
-// meaning "the operator pressed Ctrl-C", deliberately excluded from health
-// alerting. A stall would therefore be invisible in `slimproxy log` and would
-// never contribute to a failure streak.
+// reach the usage pipeline: severing works by cancelling the upstream context,
+// and what the inner executor's reporter publishes then depends on where the
+// cancel lands. Caught blocked on the upstream read, the read error is
+// published as "context canceled" and metrics files the request under
+// CauseCanceled -- the bucket meaning "the operator pressed Ctrl-C",
+// deliberately excluded from health alerting. Caught parked on its channel
+// send, the inner goroutine returns without publishing anything at all. An
+// earlier version of this comment asserted the first outcome unconditionally;
+// the second is the same silent ending the noTail note exists for. Either way
+// a stall would be invisible in `slimproxy log` and would never contribute to
+// a failure streak.
 //
-// That is what onStall exists for: the guard reports itself, rather than
-// hoping a string survives a pipeline it does not control.
+// That is what notes.stalled exists for: the guard reports itself, rather
+// than hoping a string survives a pipeline it does not control.
 func errStreamStalled(idle time.Duration) error {
 	return fmt.Errorf("slimproxy: upstream stream stalled: no data for %s (stream idle timeout); severed so the client can retry", idle)
+}
+
+// stallGuardNotes carries the guard's self-reports out of the stream wrapper.
+//
+// A callback set rather than a journal dependency, for the same reason
+// earlyFlushNotes is one: the guard stays a pure stream wrapper, and the
+// journal wiring lives with Runtime's other dependencies. Every field is
+// optional; nil in tests that only exercise the stream mechanics.
+type stallGuardNotes struct {
+	// stalled fires when the idle window expires and the stream is severed.
+	stalled func(idle time.Duration)
+	// noTail fires when the upstream closed the stream cleanly without one
+	// line carrying a top-level usage field ever passing through. That line
+	// (the tail message_delta) is the only publish trigger the upstream SDK's
+	// stream reporter has short of an error, so a stream ending before it
+	// leaves no usage record and no journal event while the access log
+	// records a 200.
+	noTail func()
+	// clientDrop fires when the request context ended while the upstream
+	// stream was still open. accounted says whether the usage tail or an
+	// error had already passed through: false means the request may be about
+	// to vanish from the books the same way noTail describes -- the inner
+	// goroutine publishes "context canceled" only when the cancel catches it
+	// blocked on the upstream read, and publishes nothing when it catches it
+	// parked on a channel send.
+	clientDrop func(accounted bool)
 }
 
 // stallGuard wraps a provider executor and severs streams that stop moving.
 type stallGuard struct {
 	inner coreauth.ProviderExecutor
 	idle  time.Duration
-	// onStall records a firing. Optional; nil in tests that only exercise the
-	// stream mechanics.
-	onStall func(time.Duration)
+	notes stallGuardNotes
 }
 
 func (g *stallGuard) Identifier() string { return g.inner.Identifier() }
@@ -173,6 +214,15 @@ func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelF
 	defer cancelUpstream()
 	timer := time.NewTimer(g.idle)
 	defer timer.Stop()
+	// The end-of-stream ledger. accounted becomes true the moment the stream
+	// carries something the upstream SDK's reporter publishes on: a line with
+	// a top-level usage field (Publish) or a chunk-level error
+	// (PublishFailure). A stream that ends without either has produced no
+	// usage record and never will; the notes below are what make that ending
+	// visible. Tracked at receive rather than at forward because the SDK's
+	// publish happens on its side of the channel -- a chunk it managed to
+	// send was already published, whether or not the client lived to read it.
+	accounted := false
 	for {
 		// Re-arm at the top of every receive. A firing that happened while a
 		// forward below was blocked on the reader is stale -- the upstream was
@@ -189,11 +239,23 @@ func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelF
 		select {
 		case chunk, ok := <-in:
 			if !ok {
+				// Clean end of stream. Without the usage tail this is the
+				// silent zero-record ending; say so, because nothing
+				// downstream can.
+				if !accounted && g.notes.noTail != nil {
+					g.notes.noTail()
+				}
 				return
+			}
+			if !accounted && (chunk.Err != nil || carriesUsageTail(chunk.Payload)) {
+				accounted = true
 			}
 			select {
 			case out <- chunk:
 			case <-reqCtx.Done():
+				if g.notes.clientDrop != nil {
+					g.notes.clientDrop(accounted)
+				}
 				return
 			}
 		case <-timer.C:
@@ -201,8 +263,8 @@ func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelF
 				"slimproxy: 上游流 %s 无数据，已切断让客户端立即重试（此前这种流会挂住数分钟）",
 				"slimproxy: upstream stream sent nothing for %s; severed so the client retries now (these used to hang for minutes)"),
 				g.idle)
-			if g.onStall != nil {
-				g.onStall(g.idle)
+			if g.notes.stalled != nil {
+				g.notes.stalled(g.idle)
 			}
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errStreamStalled(g.idle)}:
@@ -211,14 +273,53 @@ func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelF
 			cancelUpstream()
 			// Let the inner stream goroutine observe the cancel and finish;
 			// anything it still sends describes a stream already pronounced
-			// dead.
+			// dead. Neither noTail nor clientDrop is reported on this exit:
+			// stalled already named this ending.
 			for range in {
 			}
 			return
 		case <-reqCtx.Done():
+			if g.notes.clientDrop != nil {
+				g.notes.clientDrop(accounted)
+			}
 			return
 		}
 	}
+}
+
+// carriesUsageTail reports whether one stream chunk contains a line the
+// upstream SDK's usage reporter would have published on.
+//
+// A chunk on the claude passthrough path is one whole SSE event -- an
+// "event:" line, one or more "data:" lines, a blank terminator -- so the scan
+// is per line, and the per-line predicate mirrors the SDK's
+// (helps.ParseClaudeStreamUsage): strip the data: prefix, require valid JSON,
+// require a TOP-LEVEL usage field. Top-level is load-bearing: message_start
+// carries usage nested under "message", and counting it would mark every
+// stream accounted at its first event, blinding the check entirely.
+//
+// Translated routes (an openai-format client on the claude provider) see
+// post-translation chunks here while the SDK publishes off the raw claude
+// lines, so the mirror is only exact on the passthrough path -- which is the
+// route this deployment actually runs. The translators emit a top-level usage
+// line of their own, so the approximation errs quiet, not noisy.
+func carriesUsageTail(payload []byte) bool {
+	for _, line := range bytes.Split(payload, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 || bytes.HasPrefix(line, []byte("event:")) || bytes.Equal(line, []byte("[DONE]")) {
+			continue
+		}
+		if bytes.HasPrefix(line, []byte("data:")) {
+			line = bytes.TrimSpace(line[len("data:"):])
+		}
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		if gjson.ValidBytes(line) && gjson.GetBytes(line, "usage").Exists() {
+			return true
+		}
+	}
+	return false
 }
 
 // ensureStallGuard wraps the claude executor if it is present and unwrapped.
@@ -237,7 +338,7 @@ func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelF
 // The collision window is microseconds against an event that happens minutes
 // apart, and the alternative -- not wrapping at all -- costs every stalled
 // stream, so this is an accepted trade rather than an unseen one.
-func ensureStallGuard(mgr *coreauth.Manager, idle time.Duration, onStall func(time.Duration)) {
+func ensureStallGuard(mgr *coreauth.Manager, idle time.Duration, notes stallGuardNotes) {
 	if mgr == nil || idle <= 0 {
 		return
 	}
@@ -257,7 +358,7 @@ func ensureStallGuard(mgr *coreauth.Manager, idle time.Duration, onStall func(ti
 		}
 		return
 	}
-	mgr.RegisterExecutor(&stallGuard{inner: exec, idle: idle, onStall: onStall})
+	mgr.RegisterExecutor(&stallGuard{inner: exec, idle: idle, notes: notes})
 }
 
 // shouldWarnMismatch reports whether the refusal is due to be said again.
@@ -331,6 +432,57 @@ func (r *Runtime) noteStall(idle time.Duration) {
 	})
 }
 
+// noteNoTail records a stream that ended with no usage record published.
+//
+// TODO: two upgrades were considered and deliberately not decided here.
+// (a) Synthesize a KindRequest event so the request enters the books instead
+// of only being flagged -- needs route/model/auth context threaded from
+// ExecuteStream into the pump. (b) Fix the source instead: a go.mod replace
+// of the upstream SDK adding `defer reporter.EnsurePublished(ctx)` to the
+// claude stream goroutine, the exact defer shape openai_compat_executor.go
+// already uses. Either would make this note redundant; until one is picked,
+// the note is the whole fix.
+func (r *Runtime) noteNoTail() {
+	if r == nil {
+		return
+	}
+	r.Note(journal.Event{
+		Kind:  journal.KindHealth,
+		State: "notail",
+		Detail: i18n.T(
+			"上游流在 usage 尾行（message_delta）出现前干净结束：SDK 不会发布 usage 记录，journal 里不会有这条请求——此前这种缺口只能靠访问日志与 journal 对账才能发现",
+			"upstream stream ended cleanly before the usage tail line (message_delta): the SDK publishes no usage record and the request never reaches the journal -- a gap previously findable only by cross-auditing the access log"),
+	})
+}
+
+// noteClientDrop records the request side hanging up mid-stream.
+//
+// "Request side" rather than "client": the same cancel also arrives when the
+// early-flush silence watchdog or a shutdown tears the handler context down.
+// The distinction the event does draw is whether the books were already
+// settled when the drop happened, because an unaccounted drop is the same
+// zero-record ending noteNoTail describes, minus the certainty.
+func (r *Runtime) noteClientDrop(accounted bool) {
+	if r == nil {
+		return
+	}
+	detail := i18n.T(
+		"请求侧在上游流结束前取消（多为客户端挂断）；usage 尾行尚未出现，这条请求可能不会留下任何 usage 记录，或只留下一条 canceled",
+		"request side cancelled before the upstream stream ended (usually the client hanging up); the usage tail had not arrived, so the request may leave no usage record at all, or only a canceled one")
+	if accounted {
+		detail = i18n.T(
+			"请求侧在上游流结束前取消（多为客户端挂断）；usage 尾行或错误已经过流，账应已记全",
+			"request side cancelled before the upstream stream ended (usually the client hanging up); the usage tail or an error had already passed through, so the books should be complete")
+	}
+	r.Note(journal.Event{Kind: journal.KindHealth, State: "clientdrop", Detail: detail})
+}
+
+// stallNotes bundles the guard's reporters against this Runtime. Note is
+// nil-safe, so the bundle is correct with or without a journal.
+func (r *Runtime) stallNotes() stallGuardNotes {
+	return stallGuardNotes{stalled: r.noteStall, noTail: r.noteNoTail, clientDrop: r.noteClientDrop}
+}
+
 // keepStallGuardInstalled reasserts the wrap for the run's lifetime.
 //
 // The eager call matters: a ticker's first tick is a full interval away, and
@@ -348,7 +500,7 @@ func (r *Runtime) keepStallGuardInstalled(ctx context.Context, idle time.Duratio
 	if idle <= 0 {
 		return
 	}
-	ensureStallGuard(r.Credentials(), idle, r.noteStall)
+	ensureStallGuard(r.Credentials(), idle, r.stallNotes())
 	ticker := time.NewTicker(stallGuardInterval)
 	defer ticker.Stop()
 	for {
@@ -357,6 +509,6 @@ func (r *Runtime) keepStallGuardInstalled(ctx context.Context, idle time.Duratio
 			return
 		case <-ticker.C:
 		}
-		ensureStallGuard(r.Credentials(), idle, r.noteStall)
+		ensureStallGuard(r.Credentials(), idle, r.stallNotes())
 	}
 }

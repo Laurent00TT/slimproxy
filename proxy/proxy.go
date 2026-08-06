@@ -528,7 +528,7 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 			// when it starts, so one that begins unguarded stays unguarded
 			// for its whole life -- exactly the multi-minute hang the guard
 			// exists to prevent.
-			ensureStallGuard(h.AuthManager, rt.streamIdle, rt.noteStall)
+			ensureStallGuard(h.AuthManager, rt.streamIdle, rt.stallNotes())
 		}),
 		// Registered here rather than in the journal branch above, for the same
 		// reason the health tracker is: what is running right now is a property
