@@ -49,7 +49,9 @@ package proxy
 // cross-auditing the two files. The pump watches the same signal the SDK does
 // and self-reports the silent endings: "notail" when the stream closed without
 // the tail, "clientdrop" when the request side hung up while the upstream was
-// still open. See stallGuardNotes.
+// still open. Both arm themselves on the claude message_start event, so
+// translated routes -- whose usage lines the translators mostly nest or
+// rename -- stay silent instead of phantoming. See stallGuardNotes.
 
 import (
 	"bytes"
@@ -134,20 +136,22 @@ func errStreamStalled(idle time.Duration) error {
 type stallGuardNotes struct {
 	// stalled fires when the idle window expires and the stream is severed.
 	stalled func(idle time.Duration)
-	// noTail fires when the upstream closed the stream cleanly without one
-	// line carrying a top-level usage field ever passing through. That line
-	// (the tail message_delta) is the only publish trigger the upstream SDK's
-	// stream reporter has short of an error, so a stream ending before it
-	// leaves no usage record and no journal event while the access log
-	// records a 200.
+	// noTail fires when an armed stream -- one that opened with the claude
+	// message_start event; see the ledger comment in pump -- closed cleanly,
+	// request still alive, without one line carrying a top-level usage field
+	// ever passing through. That line (the tail message_delta) is the only
+	// publish trigger the upstream SDK's stream reporter has short of an
+	// error, so a stream ending before it leaves no usage record and no
+	// journal event while the access log records a 200.
 	noTail func()
-	// clientDrop fires when the request context ended while the upstream
-	// stream was still open. accounted says whether the usage tail or an
-	// error had already passed through: false means the request may be about
-	// to vanish from the books the same way noTail describes -- the inner
-	// goroutine publishes "context canceled" only when the cancel catches it
-	// blocked on the upstream read, and publishes nothing when it catches it
-	// parked on a channel send.
+	// clientDrop fires when the request context ended while an armed stream
+	// was still open, or was why it closed. accounted says whether the usage
+	// tail or an error had passed through the channel by then -- and false is
+	// a hedge, not a verdict: the SDK publishes at scan time, before the
+	// event crosses the channel, and a cancel caught on the upstream read is
+	// itself published as "context canceled", so an unaccounted drop may in
+	// truth be fully recorded, recorded as canceled, or absent, decided by
+	// where the cancel landed. The journal wording carries that uncertainty.
 	clientDrop func(accounted bool)
 }
 
@@ -214,14 +218,32 @@ func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelF
 	defer cancelUpstream()
 	timer := time.NewTimer(g.idle)
 	defer timer.Stop()
-	// The end-of-stream ledger. accounted becomes true the moment the stream
-	// carries something the upstream SDK's reporter publishes on: a line with
-	// a top-level usage field (Publish) or a chunk-level error
-	// (PublishFailure). A stream that ends without either has produced no
-	// usage record and never will; the notes below are what make that ending
-	// visible. Tracked at receive rather than at forward because the SDK's
-	// publish happens on its side of the channel -- a chunk it managed to
-	// send was already published, whether or not the client lived to read it.
+	// The end-of-stream ledger, armed only for streams speaking the claude
+	// dialect. accounted becomes true the moment the stream carries something
+	// the upstream SDK's reporter publishes on: a line with a top-level usage
+	// field (Publish) or a chunk-level error (PublishFailure). An armed
+	// stream that ends without either has produced no usage record and never
+	// will; the notes below are what make that ending visible.
+	//
+	// Arming matters because translated routes -- an openai-responses,
+	// gemini, or interactions client on this same claude executor -- see
+	// POST-translation chunks here while the SDK publishes off the raw claude
+	// lines, and three of those four translator families nest or rename the
+	// usage field. Mirroring the SDK's predicate against their output would
+	// read every successful stream as a missing tail and flood the journal
+	// with phantom events. message_start only ever appears in claude-format
+	// output, so it is the arming signal: unarmed streams report nothing,
+	// trading blindness on routes this deployment does not run for a journal
+	// that can be trusted on the one it does.
+	//
+	// accounted is tracked at receive rather than at forward because the SDK
+	// publishes on its side of the channel -- a chunk it managed to send was
+	// already published, whether or not the client lived to read it. The
+	// converse does not hold: the SDK publishes at scan time, BEFORE the
+	// event crosses the channel, so accounted can lag the truth by one
+	// in-flight event and false means "unknown", not "lost". The clientDrop
+	// wording hedges accordingly.
+	armed := false
 	accounted := false
 	for {
 		// Re-arm at the top of every receive. A firing that happened while a
@@ -239,21 +261,38 @@ func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelF
 		select {
 		case chunk, ok := <-in:
 			if !ok {
-				// Clean end of stream. Without the usage tail this is the
-				// silent zero-record ending; say so, because nothing
-				// downstream can.
-				if !accounted && g.notes.noTail != nil {
+				if !armed {
+					return
+				}
+				// End of stream -- but WHOSE ending it was needs the request
+				// context consulted first. A hung-up client cancels reqCtx,
+				// the cancel unwinds the upstream, and the resulting close
+				// can be ready in the same select as reqCtx.Done, which Go
+				// picks between at random: without this check, roughly half
+				// of routine client drops would be filed under the rare,
+				// definitive notail (measured 974/2000 on a probe), drowning
+				// the exact signal the event exists to isolate.
+				if reqCtx.Err() != nil {
+					if g.notes.clientDrop != nil {
+						g.notes.clientDrop(accounted)
+					}
+				} else if !accounted && g.notes.noTail != nil {
+					// The request is alive and the upstream ended cleanly
+					// without the tail: the silent zero-record ending. Say
+					// so, because nothing downstream can.
 					g.notes.noTail()
 				}
 				return
 			}
-			if !accounted && (chunk.Err != nil || carriesUsageTail(chunk.Payload)) {
-				accounted = true
+			if !armed || !accounted {
+				opens, settles := scanLedgerSignals(chunk.Payload)
+				armed = armed || opens
+				accounted = accounted || settles || chunk.Err != nil
 			}
 			select {
 			case out <- chunk:
 			case <-reqCtx.Done():
-				if g.notes.clientDrop != nil {
+				if armed && g.notes.clientDrop != nil {
 					g.notes.clientDrop(accounted)
 				}
 				return
@@ -279,7 +318,7 @@ func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelF
 			}
 			return
 		case <-reqCtx.Done():
-			if g.notes.clientDrop != nil {
+			if armed && g.notes.clientDrop != nil {
 				g.notes.clientDrop(accounted)
 			}
 			return
@@ -287,23 +326,20 @@ func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelF
 	}
 }
 
-// carriesUsageTail reports whether one stream chunk contains a line the
-// upstream SDK's usage reporter would have published on.
+// scanLedgerSignals reports what one stream chunk means to the ledger: opens
+// is the claude stream's opening event (message_start, the arming signal),
+// settles is a line the upstream SDK's usage reporter publishes on.
 //
 // A chunk on the claude passthrough path is one whole SSE event -- an
 // "event:" line, one or more "data:" lines, a blank terminator -- so the scan
 // is per line, and the per-line predicate mirrors the SDK's
 // (helps.ParseClaudeStreamUsage): strip the data: prefix, require valid JSON,
 // require a TOP-LEVEL usage field. Top-level is load-bearing: message_start
-// carries usage nested under "message", and counting it would mark every
-// stream accounted at its first event, blinding the check entirely.
-//
-// Translated routes (an openai-format client on the claude provider) see
-// post-translation chunks here while the SDK publishes off the raw claude
-// lines, so the mirror is only exact on the passthrough path -- which is the
-// route this deployment actually runs. The translators emit a top-level usage
-// line of their own, so the approximation errs quiet, not noisy.
-func carriesUsageTail(payload []byte) bool {
+// carries usage nested under "message", and counting it would settle every
+// stream's books at its first event, blinding the check entirely -- which is
+// what makes message_start servable as the arming signal and the settlement
+// test in the same pass.
+func scanLedgerSignals(payload []byte) (opens, settles bool) {
 	for _, line := range bytes.Split(payload, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 || bytes.HasPrefix(line, []byte("event:")) || bytes.Equal(line, []byte("[DONE]")) {
@@ -312,14 +348,17 @@ func carriesUsageTail(payload []byte) bool {
 		if bytes.HasPrefix(line, []byte("data:")) {
 			line = bytes.TrimSpace(line[len("data:"):])
 		}
-		if len(line) == 0 || line[0] != '{' {
+		if len(line) == 0 || line[0] != '{' || !gjson.ValidBytes(line) {
 			continue
 		}
-		if gjson.ValidBytes(line) && gjson.GetBytes(line, "usage").Exists() {
-			return true
+		if gjson.GetBytes(line, "type").String() == "message_start" {
+			opens = true
+		}
+		if gjson.GetBytes(line, "usage").Exists() {
+			settles = true
 		}
 	}
-	return false
+	return opens, settles
 }
 
 // ensureStallGuard wraps the claude executor if it is present and unwrapped.
@@ -450,8 +489,8 @@ func (r *Runtime) noteNoTail() {
 		Kind:  journal.KindHealth,
 		State: "notail",
 		Detail: i18n.T(
-			"上游流在 usage 尾行（message_delta）出现前干净结束：SDK 不会发布 usage 记录，journal 里不会有这条请求——此前这种缺口只能靠访问日志与 journal 对账才能发现",
-			"upstream stream ended cleanly before the usage tail line (message_delta): the SDK publishes no usage record and the request never reaches the journal -- a gap previously findable only by cross-auditing the access log"),
+			"上游流在 usage 尾行（message_delta）出现前干净结束：这条流不会发布任何 usage 记录，访问日志侧照记 200——此前这种缺口只能靠两边对账才能发现",
+			"upstream stream ended cleanly before the usage tail line (message_delta): this stream publishes no usage record while the access log records a 200 -- a gap previously findable only by cross-auditing the two files"),
 	})
 }
 
@@ -467,8 +506,8 @@ func (r *Runtime) noteClientDrop(accounted bool) {
 		return
 	}
 	detail := i18n.T(
-		"请求侧在上游流结束前取消（多为客户端挂断）；usage 尾行尚未出现，这条请求可能不会留下任何 usage 记录，或只留下一条 canceled",
-		"request side cancelled before the upstream stream ended (usually the client hanging up); the usage tail had not arrived, so the request may leave no usage record at all, or only a canceled one")
+		"请求侧在上游流结束前取消（多为客户端挂断）；usage 尾行未过流——取决于取消落在上游哪一步，这条请求可能被记成 canceled、可能其实已记全、也可能全无记录",
+		"request side cancelled before the upstream stream ended (usually the client hanging up); the usage tail had not come through -- depending on where the cancel landed, the request may be filed as canceled, may in fact be fully recorded, or may leave no record at all")
 	if accounted {
 		detail = i18n.T(
 			"请求侧在上游流结束前取消（多为客户端挂断）；usage 尾行或错误已经过流，账应已记全",

@@ -50,6 +50,30 @@ func (f *stallFakeExecutor) HttpRequest(_ context.Context, _ *coreauth.Auth, _ *
 
 func (f *stallFakeExecutor) PrepareRequest(_ *http.Request, _ *coreauth.Auth) error { return nil }
 
+// waitForDrops blocks until the drop counter reaches want, or fails the test.
+//
+// Order matters in the blocked-forward tests: reading the stream would reopen
+// the forward path and let the pump exit through the OUTER select instead of
+// the branch under test, so the report must be awaited while the pump still
+// has no reader -- its only possible exit then is the inner Done branch.
+func waitForDrops(t *testing.T, mu *sync.Mutex, drops *[]bool, want int) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(*drops)
+		mu.Unlock()
+		if n >= want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("2s 内 clientDrop 只上报了 %d 次，want %d", n, want)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
 func collectUntilClosed(t *testing.T, ch <-chan cliproxyexecutor.StreamChunk, deadline time.Duration) []cliproxyexecutor.StreamChunk {
 	t.Helper()
 	var got []cliproxyexecutor.StreamChunk
@@ -321,13 +345,16 @@ func TestNoTailReportedOnCleanEOFWithoutUsage(t *testing.T) {
 // was published by the SDK's PublishFailure -- the books are settled, and a
 // noTail on top would cry wolf on every failed request.
 func TestNoTailQuietWhenStreamErrors(t *testing.T) {
-	fake := &stallFakeExecutor{chunks: make(chan cliproxyexecutor.StreamChunk, 2)}
+	fake := &stallFakeExecutor{chunks: make(chan cliproxyexecutor.StreamChunk, 3)}
 	var noTails int
 	var mu sync.Mutex
 	g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
 		noTail: func() { mu.Lock(); noTails++; mu.Unlock() },
 	}}
 
+	// message_start first, so the ledger is armed and the quiet outcome is
+	// the error suppression specifically -- not the unarmed short-circuit.
+	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: sseEvent("message_start", `{"type":"message_start","message":{"id":"msg_1"}}`)}
 	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: sseEvent("content_block_delta", `{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}`)}
 	fake.chunks <- cliproxyexecutor.StreamChunk{Err: errors.New("upstream fell over")}
 	close(fake.chunks)
@@ -347,11 +374,11 @@ func TestNoTailQuietWhenStreamErrors(t *testing.T) {
 
 // TestClientDropReportedUnaccounted: the request context dying while the
 // upstream stream is still open must be said out loud, with the ledger state
-// attached -- before the tail, the SDK may publish nothing at all (the cancel
-// racing between its channel send and its upstream read), so this event is
-// the only trace the request is guaranteed to leave.
+// attached -- before the tail, whether the SDK published anything depends on
+// where the cancel caught it, so this event is the only trace the request is
+// guaranteed to leave.
 func TestClientDropReportedUnaccounted(t *testing.T) {
-	fake := &stallFakeExecutor{chunks: make(chan cliproxyexecutor.StreamChunk, 1)}
+	fake := &stallFakeExecutor{chunks: make(chan cliproxyexecutor.StreamChunk, 2)}
 	var drops []bool
 	var noTails int
 	var mu sync.Mutex
@@ -361,18 +388,21 @@ func TestClientDropReportedUnaccounted(t *testing.T) {
 	}}
 
 	reqCtx, hangUp := context.WithCancel(context.Background())
+	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: sseEvent("message_start", `{"type":"message_start","message":{"id":"msg_1"}}`)}
 	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: sseEvent("content_block_delta", `{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}`)}
 
 	result, err := g.ExecuteStream(reqCtx, &coreauth.Auth{}, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
 	if err != nil {
 		t.Fatalf("ExecuteStream: %v", err)
 	}
-	// Drain the one delivered chunk so the pump is back waiting on the
-	// upstream when the hang-up lands.
-	select {
-	case <-result.Chunks:
-	case <-time.After(time.Second):
-		t.Fatal("1s 内没有收到转发的 chunk")
+	// Drain the delivered chunks so the pump is back waiting on the upstream
+	// when the hang-up lands.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-result.Chunks:
+		case <-time.After(time.Second):
+			t.Fatal("1s 内没有收到转发的 chunk")
+		}
 	}
 	hangUp()
 
@@ -399,11 +429,17 @@ func TestClientDropReportedUnaccounted(t *testing.T) {
 	}
 }
 
-// TestClientDropAccountedAfterTail: same hang-up, but the tail already passed
-// through -- the event must say the books are settled, or every routine
-// esc-cancel reads like a lost record.
-func TestClientDropAccountedAfterTail(t *testing.T) {
-	fake := &stallFakeExecutor{chunks: make(chan cliproxyexecutor.StreamChunk, 1)}
+// TestClientDropWhileForwardBlocked exercises the OTHER drop exit: the cancel
+// catching the pump mid-forward, parked on a send the client will never
+// drain. That is the common real shape -- a dropped client stops reading
+// first -- and it is a different select branch than the drained-then-cancel
+// path above; a mutation deleting its report survived the whole suite until
+// this test existed.
+func TestClientDropWhileForwardBlocked(t *testing.T) {
+	// Unbuffered on purpose: the test's send completes only when the pump has
+	// RECEIVED the chunk, so the hang-up below deterministically lands while
+	// the pump is parked on the blocked forward.
+	fake := &stallFakeExecutor{chunks: make(chan cliproxyexecutor.StreamChunk)}
 	var drops []bool
 	var mu sync.Mutex
 	g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
@@ -411,16 +447,161 @@ func TestClientDropAccountedAfterTail(t *testing.T) {
 	}}
 
 	reqCtx, hangUp := context.WithCancel(context.Background())
+	result, err := g.ExecuteStream(reqCtx, &coreauth.Auth{}, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream: %v", err)
+	}
+	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: sseEvent("message_start", `{"type":"message_start","message":{"id":"msg_1"}}`)}
+	// Nobody reads result.Chunks: the pump is now stuck forwarding. The
+	// report is awaited BEFORE any read -- see waitForDrops for why.
+	hangUp()
+	waitForDrops(t, &mu, &drops, 1)
+
+	got := collectUntilClosed(t, result.Chunks, 2*time.Second)
+	if len(got) != 0 {
+		t.Fatalf("挂断后收到 %d 个 chunk，want 0", len(got))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(drops) != 1 {
+		t.Fatalf("clientDrop 上报了 %d 次，want 1——卡在转发上的挂断没人报，journal 就少一条", len(drops))
+	}
+	if drops[0] {
+		t.Error("尾行从未过流，accounted 却是 true")
+	}
+}
+
+// TestClientDropAccountedAtReceiveNotForward pins the ledger's bookkeeping
+// point: accounted flips when the tail is RECEIVED from the upstream, not
+// when it is forwarded -- the SDK published before it ever sent the chunk, so
+// a tail stuck in a blocked forward is still a settled account.
+func TestClientDropAccountedAtReceiveNotForward(t *testing.T) {
+	fake := &stallFakeExecutor{chunks: make(chan cliproxyexecutor.StreamChunk)}
+	var drops []bool
+	var mu sync.Mutex
+	g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
+		clientDrop: func(accounted bool) { mu.Lock(); drops = append(drops, accounted); mu.Unlock() },
+	}}
+
+	reqCtx, hangUp := context.WithCancel(context.Background())
+	result, err := g.ExecuteStream(reqCtx, &coreauth.Auth{}, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("ExecuteStream: %v", err)
+	}
+	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: sseEvent("message_start", `{"type":"message_start","message":{"id":"msg_1"}}`)}
+	select {
+	case <-result.Chunks:
+	case <-time.After(time.Second):
+		t.Fatal("1s 内没有收到 message_start")
+	}
+	// The unbuffered send synchronizes: once it returns, the pump HAS the
+	// tail. The client then stops reading and hangs up with that tail still
+	// stuck in the forward; the report is awaited before any read.
+	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: sseEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}`)}
+	hangUp()
+	waitForDrops(t, &mu, &drops, 1)
+	collectUntilClosed(t, result.Chunks, 2*time.Second)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(drops) != 1 {
+		t.Fatalf("clientDrop 上报了 %d 次，want 1", len(drops))
+	}
+	if !drops[0] {
+		t.Error("尾行已被接收（虽未转发出去），accounted 却是 false——SDK 在发送前就已发布，这笔账是记了的")
+	}
+}
+
+// TestUnarmedStreamStaysSilent: a stream that never speaks the claude dialect
+// -- a translated route, whose usage lines the translators nest or rename --
+// must report nothing at all. Before the arming gate, every successful
+// gemini/responses/interactions-format stream would have journalled a phantom
+// notail; blindness there is the accepted price of a journal with no false
+// entries.
+func TestUnarmedStreamStaysSilent(t *testing.T) {
+	geminiish := []byte(`data: {"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"totalTokenCount":7}}` + "\n\n")
+
+	t.Run("clean close", func(t *testing.T) {
+		fake := &stallFakeExecutor{chunks: make(chan cliproxyexecutor.StreamChunk, 1)}
+		var noTails, drops int
+		var mu sync.Mutex
+		g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
+			noTail:     func() { mu.Lock(); noTails++; mu.Unlock() },
+			clientDrop: func(bool) { mu.Lock(); drops++; mu.Unlock() },
+		}}
+		fake.chunks <- cliproxyexecutor.StreamChunk{Payload: geminiish}
+		close(fake.chunks)
+
+		result, err := g.ExecuteStream(context.Background(), &coreauth.Auth{}, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
+		if err != nil {
+			t.Fatalf("ExecuteStream: %v", err)
+		}
+		collectUntilClosed(t, result.Chunks, 2*time.Second)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if noTails != 0 || drops != 0 {
+			t.Fatalf("未上膛的流上报了 noTail=%d clientDrop=%d：翻译路由的每次成功都会变成幻影事件", noTails, drops)
+		}
+	})
+
+	t.Run("hang-up", func(t *testing.T) {
+		fake := &stallFakeExecutor{chunks: make(chan cliproxyexecutor.StreamChunk, 1)}
+		var noTails, drops int
+		var mu sync.Mutex
+		g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
+			noTail:     func() { mu.Lock(); noTails++; mu.Unlock() },
+			clientDrop: func(bool) { mu.Lock(); drops++; mu.Unlock() },
+		}}
+		fake.chunks <- cliproxyexecutor.StreamChunk{Payload: geminiish}
+
+		reqCtx, hangUp := context.WithCancel(context.Background())
+		result, err := g.ExecuteStream(reqCtx, &coreauth.Auth{}, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
+		if err != nil {
+			t.Fatalf("ExecuteStream: %v", err)
+		}
+		select {
+		case <-result.Chunks:
+		case <-time.After(time.Second):
+			t.Fatal("1s 内没有收到转发的 chunk")
+		}
+		hangUp()
+		collectUntilClosed(t, result.Chunks, 2*time.Second)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if noTails != 0 || drops != 0 {
+			t.Fatalf("未上膛的流上报了 noTail=%d clientDrop=%d", noTails, drops)
+		}
+	})
+}
+
+// TestClientDropAccountedAfterTail: same hang-up, but the tail already passed
+// through -- the event must say the books are settled, or every routine
+// esc-cancel reads like a lost record.
+func TestClientDropAccountedAfterTail(t *testing.T) {
+	fake := &stallFakeExecutor{chunks: make(chan cliproxyexecutor.StreamChunk, 2)}
+	var drops []bool
+	var mu sync.Mutex
+	g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
+		clientDrop: func(accounted bool) { mu.Lock(); drops = append(drops, accounted); mu.Unlock() },
+	}}
+
+	reqCtx, hangUp := context.WithCancel(context.Background())
+	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: sseEvent("message_start", `{"type":"message_start","message":{"id":"msg_1"}}`)}
 	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: sseEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}`)}
 
 	result, err := g.ExecuteStream(reqCtx, &coreauth.Auth{}, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
 	if err != nil {
 		t.Fatalf("ExecuteStream: %v", err)
 	}
-	select {
-	case <-result.Chunks:
-	case <-time.After(time.Second):
-		t.Fatal("1s 内没有收到转发的 chunk")
+	for i := 0; i < 2; i++ {
+		select {
+		case <-result.Chunks:
+		case <-time.After(time.Second):
+			t.Fatal("1s 内没有收到转发的 chunk")
+		}
 	}
 	hangUp()
 	collectUntilClosed(t, result.Chunks, 2*time.Second)
@@ -435,29 +616,35 @@ func TestClientDropAccountedAfterTail(t *testing.T) {
 	}
 }
 
-// TestCarriesUsageTail pins the per-line predicate to the SDK's
+// TestScanLedgerSignals pins the per-line predicate to the SDK's
 // (helps.ParseClaudeStreamUsage): data-prefix stripping, valid JSON, and --
-// the load-bearing part -- usage at the TOP level only.
-func TestCarriesUsageTail(t *testing.T) {
+// the load-bearing part -- usage at the TOP level only, with message_start
+// arming the ledger instead of settling it. The translated-format rows are
+// the arming gate's reason to exist: none of them may register either way.
+func TestScanLedgerSignals(t *testing.T) {
 	cases := []struct {
-		name    string
-		payload string
-		want    bool
+		name        string
+		payload     string
+		wantOpens   bool
+		wantSettles bool
 	}{
-		{"尾部 message_delta", "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":42}}\n\n", true},
-		{"message_start 的嵌套 usage 不算", "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n", false},
-		{"文本增量", "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"usage\"}}\n\n", false},
-		{"data: 后无空格", "data:{\"usage\":{}}\n\n", true},
-		{"裸 JSON 行（无 data: 前缀）", "{\"usage\":{\"output_tokens\":1}}", true},
-		{"[DONE] 哨兵", "data: [DONE]\n\n", false},
-		{"非法 JSON 里出现 usage 字样", "data: {\"usage\":oops}\n\n", false},
-		{"event 行里出现 usage 字样", "event: usage\ndata: {\"type\":\"ping\"}\n\n", false},
-		{"多行事件的第二个 data 行带 usage", "event: x\ndata: {\"type\":\"x\"}\ndata: {\"usage\":{}}\n\n", true},
-		{"空 payload", "", false},
+		{"尾部 message_delta", "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":42}}\n\n", false, true},
+		{"message_start 上膛但不结账", "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n", true, false},
+		{"文本增量", "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"usage\"}}\n\n", false, false},
+		{"data: 后无空格", "data:{\"usage\":{}}\n\n", false, true},
+		{"裸 JSON 行（无 data: 前缀）", "{\"usage\":{\"output_tokens\":1}}", false, true},
+		{"[DONE] 哨兵", "data: [DONE]\n\n", false, false},
+		{"非法 JSON 里出现 usage 字样", "data: {\"usage\":oops}\n\n", false, false},
+		{"event 行里出现 usage 字样", "event: usage\ndata: {\"type\":\"ping\"}\n\n", false, false},
+		{"多行事件的第二个 data 行带 usage", "event: x\ndata: {\"type\":\"x\"}\ndata: {\"usage\":{}}\n\n", false, true},
+		{"空 payload", "", false, false},
+		{"gemini 翻译流的 usageMetadata 两不沾", "data: {\"candidates\":[],\"usageMetadata\":{\"totalTokenCount\":7}}\n\n", false, false},
+		{"responses 翻译流的嵌套 response.usage 两不沾", "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"total_tokens\":9}}}\n\n", false, false},
 	}
 	for _, tc := range cases {
-		if got := carriesUsageTail([]byte(tc.payload)); got != tc.want {
-			t.Errorf("%s: carriesUsageTail = %v, want %v", tc.name, got, tc.want)
+		opens, settles := scanLedgerSignals([]byte(tc.payload))
+		if opens != tc.wantOpens || settles != tc.wantSettles {
+			t.Errorf("%s: scanLedgerSignals = (opens=%v, settles=%v), want (%v, %v)", tc.name, opens, settles, tc.wantOpens, tc.wantSettles)
 		}
 	}
 }
@@ -480,42 +667,55 @@ func TestStallErrorAvoidsMisclassifyingWords(t *testing.T) {
 
 // TestEnsureStallGuardWrapsAndReasserts: upstream re-registers a bare executor
 // on every auth update; the sweep must wrap it again, and must not wrap a
-// wrap.
+// wrap. The notes plumbing is asserted at every step because it is what a
+// refactor loses silently: the pump nil-guards every callback, so dropped
+// wiring compiles, passes every direct-construction test, and journals
+// nothing -- the whole feature off with the suite green (a mutation doing
+// exactly that survived until these assertions existed).
 func TestEnsureStallGuardWrapsAndReasserts(t *testing.T) {
 	mgr := coreauth.NewManager(nil, nil, nil)
 	fake := &stallFakeExecutor{chunks: make(chan cliproxyexecutor.StreamChunk)}
 	mgr.RegisterExecutor(fake)
 
-	ensureStallGuard(mgr, 90*time.Second, stallGuardNotes{})
-	exec, ok := mgr.Executor("claude")
-	if !ok {
-		t.Fatal("claude executor 不见了")
+	notes := stallGuardNotes{
+		stalled:    func(time.Duration) {},
+		noTail:     func() {},
+		clientDrop: func(bool) {},
 	}
-	if _, wrapped := exec.(*stallGuard); !wrapped {
-		t.Fatal("ensureStallGuard 没有安装包装")
+	requireWired := func(t *testing.T, when string) *stallGuard {
+		t.Helper()
+		exec, ok := mgr.Executor("claude")
+		if !ok {
+			t.Fatalf("%s：claude executor 不见了", when)
+		}
+		g, wrapped := exec.(*stallGuard)
+		if !wrapped {
+			t.Fatalf("%s：没有安装包装", when)
+		}
+		if g.notes.stalled == nil || g.notes.noTail == nil || g.notes.clientDrop == nil {
+			t.Fatalf("%s：notes 接线丢了 (stalled=%v noTail=%v clientDrop=%v)——三类事件会静默消失",
+				when, g.notes.stalled != nil, g.notes.noTail != nil, g.notes.clientDrop != nil)
+		}
+		return g
 	}
 
-	ensureStallGuard(mgr, 90*time.Second, stallGuardNotes{})
-	exec, _ = mgr.Executor("claude")
-	g, wrapped := exec.(*stallGuard)
-	if !wrapped {
-		t.Fatal("第二次 ensure 后包装消失了")
-	}
+	ensureStallGuard(mgr, 90*time.Second, notes)
+	requireWired(t, "首次 ensure 后")
+
+	ensureStallGuard(mgr, 90*time.Second, notes)
+	g := requireWired(t, "第二次 ensure 后")
 	if _, double := g.inner.(*stallGuard); double {
 		t.Fatal("包装被套了两层：ensure 不幂等")
 	}
 
 	// Upstream replaces the executor out from under us.
 	mgr.RegisterExecutor(fake)
-	exec, _ = mgr.Executor("claude")
+	exec, _ := mgr.Executor("claude")
 	if _, wrapped := exec.(*stallGuard); wrapped {
 		t.Fatal("测试前提坏了：RegisterExecutor 应该已经换成了裸 executor")
 	}
-	ensureStallGuard(mgr, 90*time.Second, stallGuardNotes{})
-	exec, _ = mgr.Executor("claude")
-	if _, wrapped := exec.(*stallGuard); !wrapped {
-		t.Fatal("上游覆盖后 ensure 没有重新包装")
-	}
+	ensureStallGuard(mgr, 90*time.Second, notes)
+	requireWired(t, "上游覆盖后重新 ensure")
 }
 
 // widerFakeExecutor has one exported method the guard does not forward.
