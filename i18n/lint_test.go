@@ -38,8 +38,12 @@ func TestEveryChineseStringIsTranslated(t *testing.T) {
 		name := d.Name()
 		if d.IsDir() {
 			// Skip everything that is not this module's production code.
+			// third_party is the upstream SDK fork: its Chinese strings are the
+			// upstream's own UI, rendered by the upstream's own language switch,
+			// and patching hundreds of them would bury the two lines the fork
+			// exists for (see third_party/CLIProxyAPI/SLIMPROXY_PATCHES.md).
 			if name == ".git" || name == "_backup_20260726-ui-removal" || name == "logs" ||
-				name == "auths" || name == "deploy" || name == "docs" {
+				name == "auths" || name == "deploy" || name == "docs" || name == "third_party" {
 				return filepath.SkipDir
 			}
 			return nil

@@ -196,9 +196,16 @@ func TestVersionNamesThePublishedUpstream(t *testing.T) {
 		t.Errorf("未打印版本号 %q:\n%s", proxy.Version, got)
 	}
 	if !strings.Contains(got, "CLIProxyAPI v7") {
-		t.Errorf("未提及已发布的上游版本:\n%s", got)
+		t.Errorf("未提及上游基线版本（replace 也必须保留 v7.x 可见）:\n%s", got)
+	}
+	// The replace now in go.mod is the COMMITTED fork under third_party/ --
+	// reproducible, shipped with the repo, and required to name its patch
+	// list. The distrustful "local checkout" wording is reserved for replace
+	// targets outside the repository, which remain a build-provenance smell.
+	if !strings.Contains(got, "SLIMPROXY_PATCHES") {
+		t.Errorf("上游带本地补丁，但输出没有指向补丁清单:\n%s", got)
 	}
 	if strings.Contains(got, "本地 checkout") {
-		t.Errorf("go.mod 已无 replace，输出不应再声称依赖本机目录:\n%s", got)
+		t.Errorf("受控的 third_party fork 不该用「本地 checkout」的怀疑措辞:\n%s", got)
 	}
 }

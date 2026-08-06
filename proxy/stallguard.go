@@ -43,15 +43,18 @@ package proxy
 // Since 2026-08-06 the pump also keeps the books on how a stream ENDED. The
 // upstream SDK's stream reporter publishes a usage record only when it scans a
 // line carrying a top-level usage field (the tail message_delta) or hits a
-// scanner error; a stream that ends cleanly before that line produces no usage
-// record and no journal event at all, while the access log records a 200 --
-// two such requests were found in two days of logs, findable only by
-// cross-auditing the two files. The pump watches the same signal the SDK does
-// and self-reports the silent endings: "notail" when the stream closed without
-// the tail, "clientdrop" when the request side hung up while the upstream was
-// still open. Both arm themselves on the claude message_start event, so
-// translated routes -- whose usage lines the translators mostly nest or
-// rename -- stay silent instead of phantoming. See stallGuardNotes.
+// scanner error; a stream that ended cleanly before that line used to produce
+// no usage record and no journal event at all, while the access log recorded a
+// 200 -- two such requests were found in two days of logs, findable only by
+// cross-auditing the two files. That gap is now covered from both ends. The
+// SDK fork under third_party/ carries an EnsurePublished backstop, so such a
+// stream at least leaves a zero-token record; and the pump watches the same
+// signal the SDK does and self-reports the endings with their stream identity
+// attached: "notail" when the stream closed without the tail, "clientdrop"
+// when the request side hung up while the upstream was still open. Both arm
+// themselves on the claude message_start event, so translated routes -- whose
+// usage lines the translators mostly nest or rename -- stay silent instead of
+// phantoming. See stallGuardNotes.
 
 import (
 	"bytes"
@@ -127,6 +130,21 @@ func errStreamStalled(idle time.Duration) error {
 	return fmt.Errorf("slimproxy: upstream stream stalled: no data for %s (stream idle timeout); severed so the client can retry", idle)
 }
 
+// stallStreamMeta says which stream a note is about, so the resulting journal
+// event can answer "which model, which credential, how far in" without a trip
+// to the access log. Captured at ExecuteStream, where the request context is
+// still on hand -- the pump itself only ever sees chunks.
+type stallStreamMeta struct {
+	model string
+	// auth is the credential's label, or its ID when no label is set -- the
+	// same preference the SDK's own request log uses.
+	auth    string
+	started time.Time
+}
+
+// age is how long the stream had been running when the note fired.
+func (m stallStreamMeta) age() time.Duration { return time.Since(m.started) }
+
 // stallGuardNotes carries the guard's self-reports out of the stream wrapper.
 //
 // A callback set rather than a journal dependency, for the same reason
@@ -135,15 +153,19 @@ func errStreamStalled(idle time.Duration) error {
 // optional; nil in tests that only exercise the stream mechanics.
 type stallGuardNotes struct {
 	// stalled fires when the idle window expires and the stream is severed.
-	stalled func(idle time.Duration)
+	stalled func(meta stallStreamMeta, idle time.Duration)
 	// noTail fires when an armed stream -- one that opened with the claude
 	// message_start event; see the ledger comment in pump -- closed cleanly,
 	// request still alive, without one line carrying a top-level usage field
 	// ever passing through. That line (the tail message_delta) is the only
 	// publish trigger the upstream SDK's stream reporter has short of an
 	// error, so a stream ending before it leaves no usage record and no
-	// journal event while the access log records a 200.
-	noTail func()
+	// journal event while the access log records a 200. (Since the SDK fork
+	// under third_party/ grew its EnsurePublished backstop the record half of
+	// that sentence is history -- a zero-token record now appears -- but this
+	// event remains the timeline entry that explains WHY the record is
+	// zero-token.)
+	noTail func(meta stallStreamMeta)
 	// clientDrop fires when the request context ended while an armed stream
 	// was still open, or was why it closed. accounted says whether the usage
 	// tail or an error had passed through the channel by then -- and false is
@@ -152,7 +174,7 @@ type stallGuardNotes struct {
 	// itself published as "context canceled", so an unaccounted drop may in
 	// truth be fully recorded, recorded as canceled, or absent, decided by
 	// where the cancel landed. The journal wording carries that uncertainty.
-	clientDrop func(accounted bool)
+	clientDrop func(meta stallStreamMeta, accounted bool)
 }
 
 // stallGuard wraps a provider executor and severs streams that stop moving.
@@ -207,13 +229,19 @@ func (g *stallGuard) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req
 		cancelUpstream()
 		return result, err
 	}
+	meta := stallStreamMeta{model: req.Model, started: time.Now()}
+	if auth != nil {
+		if meta.auth = auth.Label; meta.auth == "" {
+			meta.auth = auth.ID
+		}
+	}
 	out := make(chan cliproxyexecutor.StreamChunk)
-	go g.pump(ctx, cancelUpstream, result.Chunks, out)
+	go g.pump(ctx, cancelUpstream, meta, result.Chunks, out)
 	return &cliproxyexecutor.StreamResult{Headers: result.Headers, Chunks: out}, nil
 }
 
 // pump forwards chunks and enforces the idle window on upstream waits only.
-func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelFunc, in <-chan cliproxyexecutor.StreamChunk, out chan<- cliproxyexecutor.StreamChunk) {
+func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelFunc, meta stallStreamMeta, in <-chan cliproxyexecutor.StreamChunk, out chan<- cliproxyexecutor.StreamChunk) {
 	defer close(out)
 	defer cancelUpstream()
 	timer := time.NewTimer(g.idle)
@@ -274,13 +302,13 @@ func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelF
 				// the exact signal the event exists to isolate.
 				if reqCtx.Err() != nil {
 					if g.notes.clientDrop != nil {
-						g.notes.clientDrop(accounted)
+						g.notes.clientDrop(meta, accounted)
 					}
 				} else if !accounted && g.notes.noTail != nil {
 					// The request is alive and the upstream ended cleanly
 					// without the tail: the silent zero-record ending. Say
 					// so, because nothing downstream can.
-					g.notes.noTail()
+					g.notes.noTail(meta)
 				}
 				return
 			}
@@ -293,7 +321,7 @@ func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelF
 			case out <- chunk:
 			case <-reqCtx.Done():
 				if armed && g.notes.clientDrop != nil {
-					g.notes.clientDrop(accounted)
+					g.notes.clientDrop(meta, accounted)
 				}
 				return
 			}
@@ -303,7 +331,7 @@ func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelF
 				"slimproxy: upstream stream sent nothing for %s; severed so the client retries now (these used to hang for minutes)"),
 				g.idle)
 			if g.notes.stalled != nil {
-				g.notes.stalled(g.idle)
+				g.notes.stalled(meta, g.idle)
 			}
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errStreamStalled(g.idle)}:
@@ -319,7 +347,7 @@ func (g *stallGuard) pump(reqCtx context.Context, cancelUpstream context.CancelF
 			return
 		case <-reqCtx.Done():
 			if armed && g.notes.clientDrop != nil {
-				g.notes.clientDrop(accounted)
+				g.notes.clientDrop(meta, accounted)
 			}
 			return
 		}
@@ -454,44 +482,51 @@ func sameSignatureIgnoringReceiver(a, b reflect.Type) bool {
 	return true
 }
 
+// healthEventFor stamps a guard note's stream identity onto a journal event.
+//
+// KindHealth events have always been free to carry the request fields; these
+// are the first to use that. Model, credential and age answer the first three
+// questions an operator asks of any of these events, and answering them here
+// saves the trip to the access log that used to be the only way.
+func healthEventFor(meta stallStreamMeta, state, detail string) journal.Event {
+	return journal.Event{
+		Kind:      journal.KindHealth,
+		State:     state,
+		Model:     meta.model,
+		Auth:      meta.auth,
+		LatencyMs: meta.age().Milliseconds(),
+		Detail:    detail,
+	}
+}
+
 // noteStall records a firing on the request timeline.
 //
 // Kept here rather than inside the guard so the guard stays a pure stream
 // wrapper, and so the journal dependency lives with the rest of Runtime's.
-func (r *Runtime) noteStall(idle time.Duration) {
+func (r *Runtime) noteStall(meta stallStreamMeta, idle time.Duration) {
 	if r == nil {
 		return
 	}
-	r.Note(journal.Event{
-		Kind:  journal.KindHealth,
-		State: "stall",
-		Detail: fmt.Sprintf(i18n.T(
-			"上游流 %s 无数据，已切断（客户端会立即重试）",
-			"upstream stream sent nothing for %s; severed (the client retries immediately)"), idle),
-	})
+	r.Note(healthEventFor(meta, "stall", fmt.Sprintf(i18n.T(
+		"上游流 %s 无数据，已切断（客户端会立即重试）",
+		"upstream stream sent nothing for %s; severed (the client retries immediately)"), idle)))
 }
 
-// noteNoTail records a stream that ended with no usage record published.
+// noteNoTail records a stream that ended without the usage tail.
 //
-// TODO: two upgrades were considered and deliberately not decided here.
-// (a) Synthesize a KindRequest event so the request enters the books instead
-// of only being flagged -- needs route/model/auth context threaded from
-// ExecuteStream into the pump. (b) Fix the source instead: a go.mod replace
-// of the upstream SDK adding `defer reporter.EnsurePublished(ctx)` to the
-// claude stream goroutine, the exact defer shape openai_compat_executor.go
-// already uses. Either would make this note redundant; until one is picked,
-// the note is the whole fix.
-func (r *Runtime) noteNoTail() {
+// Since the SDK fork under third_party/ grew its EnsurePublished backstop,
+// such a stream also leaves a zero-token success record in the books; this
+// event is the timeline entry that explains why that record is zero-token.
+// The once-considered alternative -- synthesizing a KindRequest event here --
+// was decided against: it could never carry tokens or a true outcome, and a
+// ledger entry that admits neither is worse than a health event that says so.
+func (r *Runtime) noteNoTail(meta stallStreamMeta) {
 	if r == nil {
 		return
 	}
-	r.Note(journal.Event{
-		Kind:  journal.KindHealth,
-		State: "notail",
-		Detail: i18n.T(
-			"上游流在 usage 尾行（message_delta）出现前干净结束：这条流不会发布任何 usage 记录，访问日志侧照记 200——此前这种缺口只能靠两边对账才能发现",
-			"upstream stream ended cleanly before the usage tail line (message_delta): this stream publishes no usage record while the access log records a 200 -- a gap previously findable only by cross-auditing the two files"),
-	})
+	r.Note(healthEventFor(meta, "notail", i18n.T(
+		"上游流在 usage 尾行（message_delta）出现前干净结束：SDK 兜底会补一条零 token 记录，这条事件解释它为何是零——回复可能被截断，也可能客户端已完整收到",
+		"upstream stream ended cleanly before the usage tail line (message_delta): the SDK backstop files a zero-token record, and this event is why it is zero -- the reply may have been truncated, or the client may have received it whole")))
 }
 
 // noteClientDrop records the request side hanging up mid-stream.
@@ -501,19 +536,19 @@ func (r *Runtime) noteNoTail() {
 // The distinction the event does draw is whether the books were already
 // settled when the drop happened, because an unaccounted drop is the same
 // zero-record ending noteNoTail describes, minus the certainty.
-func (r *Runtime) noteClientDrop(accounted bool) {
+func (r *Runtime) noteClientDrop(meta stallStreamMeta, accounted bool) {
 	if r == nil {
 		return
 	}
 	detail := i18n.T(
-		"请求侧在上游流结束前取消（多为客户端挂断）；usage 尾行未过流——取决于取消落在上游哪一步，这条请求可能被记成 canceled、可能其实已记全、也可能全无记录",
-		"request side cancelled before the upstream stream ended (usually the client hanging up); the usage tail had not come through -- depending on where the cancel landed, the request may be filed as canceled, may in fact be fully recorded, or may leave no record at all")
+		"请求侧在上游流结束前取消（多为客户端挂断）；usage 尾行未过流——取决于取消落在上游哪一步，这条请求可能被记成 canceled、可能其实已记全、也可能只剩 SDK 兜底的零 token 记录",
+		"request side cancelled before the upstream stream ended (usually the client hanging up); the usage tail had not come through -- depending on where the cancel landed, the request may be filed as canceled, may in fact be fully recorded, or may leave only the SDK backstop's zero-token record")
 	if accounted {
 		detail = i18n.T(
 			"请求侧在上游流结束前取消（多为客户端挂断）；usage 尾行或错误已经过流，账应已记全",
 			"request side cancelled before the upstream stream ended (usually the client hanging up); the usage tail or an error had already passed through, so the books should be complete")
 	}
-	r.Note(journal.Event{Kind: journal.KindHealth, State: "clientdrop", Detail: detail})
+	r.Note(healthEventFor(meta, "clientdrop", detail))
 }
 
 // stallNotes bundles the guard's reporters against this Runtime. Note is

@@ -226,13 +226,13 @@ func TestStallIsReportedByTheGuardItself(t *testing.T) {
 		inner: fake,
 		idle:  80 * time.Millisecond,
 		notes: stallGuardNotes{
-			stalled: func(d time.Duration) {
+			stalled: func(_ stallStreamMeta, d time.Duration) {
 				mu.Lock()
 				defer mu.Unlock()
 				reported = append(reported, d)
 			},
-			noTail: func() { mu.Lock(); noTails++; mu.Unlock() },
-			clientDrop: func(bool) { mu.Lock(); drops++; mu.Unlock() },
+			noTail: func(stallStreamMeta) { mu.Lock(); noTails++; mu.Unlock() },
+			clientDrop: func(stallStreamMeta, bool) { mu.Lock(); drops++; mu.Unlock() },
 		},
 	}
 
@@ -269,9 +269,9 @@ func TestHealthyStreamReportsNothing(t *testing.T) {
 	var stalls, noTails, drops int
 	var mu sync.Mutex
 	g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
-		stalled:    func(time.Duration) { mu.Lock(); stalls++; mu.Unlock() },
-		noTail:     func() { mu.Lock(); noTails++; mu.Unlock() },
-		clientDrop: func(bool) { mu.Lock(); drops++; mu.Unlock() },
+		stalled:    func(stallStreamMeta, time.Duration) { mu.Lock(); stalls++; mu.Unlock() },
+		noTail:     func(stallStreamMeta) { mu.Lock(); noTails++; mu.Unlock() },
+		clientDrop: func(stallStreamMeta, bool) { mu.Lock(); drops++; mu.Unlock() },
 	}}
 
 	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: sseEvent("message_start", `{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":3}}}`)}
@@ -310,11 +310,12 @@ func sseEvent(name, data string) []byte {
 // every stream's first event.
 func TestNoTailReportedOnCleanEOFWithoutUsage(t *testing.T) {
 	fake := &stallFakeExecutor{chunks: make(chan cliproxyexecutor.StreamChunk, 3)}
-	var noTails, drops int
+	var metas []stallStreamMeta
+	var drops int
 	var mu sync.Mutex
 	g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
-		noTail:     func() { mu.Lock(); noTails++; mu.Unlock() },
-		clientDrop: func(bool) { mu.Lock(); drops++; mu.Unlock() },
+		noTail:     func(m stallStreamMeta) { mu.Lock(); metas = append(metas, m); mu.Unlock() },
+		clientDrop: func(stallStreamMeta, bool) { mu.Lock(); drops++; mu.Unlock() },
 	}}
 
 	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: sseEvent("message_start", `{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":3,"output_tokens":1}}}`)}
@@ -322,7 +323,9 @@ func TestNoTailReportedOnCleanEOFWithoutUsage(t *testing.T) {
 	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: sseEvent("message_stop", `{"type":"message_stop"}`)}
 	close(fake.chunks)
 
-	result, err := g.ExecuteStream(context.Background(), &coreauth.Auth{}, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
+	result, err := g.ExecuteStream(context.Background(),
+		&coreauth.Auth{ID: "auth-id-1", Label: "friend-key"},
+		cliproxyexecutor.Request{Model: "claude-opus-5"}, cliproxyexecutor.Options{})
 	if err != nil {
 		t.Fatalf("ExecuteStream: %v", err)
 	}
@@ -333,8 +336,20 @@ func TestNoTailReportedOnCleanEOFWithoutUsage(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if noTails != 1 {
-		t.Fatalf("noTail 上报了 %d 次，want 1——不自报，这种流就是 journal 里的零记录", noTails)
+	if len(metas) != 1 {
+		t.Fatalf("noTail 上报了 %d 次，want 1——不自报，这种流就是 journal 里的零记录", len(metas))
+	}
+	// The meta is what turns the event from "something happened" into "this
+	// model, this credential, this far in" -- the questions that previously
+	// needed the access log.
+	if metas[0].model != "claude-opus-5" {
+		t.Errorf("meta.model = %q, want claude-opus-5", metas[0].model)
+	}
+	if metas[0].auth != "friend-key" {
+		t.Errorf("meta.auth = %q, want label 优先于 ID", metas[0].auth)
+	}
+	if metas[0].started.IsZero() {
+		t.Error("meta.started 是零值——事件算不出流龄")
 	}
 	if drops != 0 {
 		t.Errorf("干净 EOF 还报了 %d 次 clientDrop", drops)
@@ -349,7 +364,7 @@ func TestNoTailQuietWhenStreamErrors(t *testing.T) {
 	var noTails int
 	var mu sync.Mutex
 	g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
-		noTail: func() { mu.Lock(); noTails++; mu.Unlock() },
+		noTail: func(stallStreamMeta) { mu.Lock(); noTails++; mu.Unlock() },
 	}}
 
 	// message_start first, so the ledger is armed and the quiet outcome is
@@ -383,8 +398,8 @@ func TestClientDropReportedUnaccounted(t *testing.T) {
 	var noTails int
 	var mu sync.Mutex
 	g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
-		noTail:     func() { mu.Lock(); noTails++; mu.Unlock() },
-		clientDrop: func(accounted bool) { mu.Lock(); drops = append(drops, accounted); mu.Unlock() },
+		noTail:     func(stallStreamMeta) { mu.Lock(); noTails++; mu.Unlock() },
+		clientDrop: func(_ stallStreamMeta, accounted bool) { mu.Lock(); drops = append(drops, accounted); mu.Unlock() },
 	}}
 
 	reqCtx, hangUp := context.WithCancel(context.Background())
@@ -443,7 +458,7 @@ func TestClientDropWhileForwardBlocked(t *testing.T) {
 	var drops []bool
 	var mu sync.Mutex
 	g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
-		clientDrop: func(accounted bool) { mu.Lock(); drops = append(drops, accounted); mu.Unlock() },
+		clientDrop: func(_ stallStreamMeta, accounted bool) { mu.Lock(); drops = append(drops, accounted); mu.Unlock() },
 	}}
 
 	reqCtx, hangUp := context.WithCancel(context.Background())
@@ -481,7 +496,7 @@ func TestClientDropAccountedAtReceiveNotForward(t *testing.T) {
 	var drops []bool
 	var mu sync.Mutex
 	g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
-		clientDrop: func(accounted bool) { mu.Lock(); drops = append(drops, accounted); mu.Unlock() },
+		clientDrop: func(_ stallStreamMeta, accounted bool) { mu.Lock(); drops = append(drops, accounted); mu.Unlock() },
 	}}
 
 	reqCtx, hangUp := context.WithCancel(context.Background())
@@ -527,8 +542,8 @@ func TestUnarmedStreamStaysSilent(t *testing.T) {
 		var noTails, drops int
 		var mu sync.Mutex
 		g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
-			noTail:     func() { mu.Lock(); noTails++; mu.Unlock() },
-			clientDrop: func(bool) { mu.Lock(); drops++; mu.Unlock() },
+			noTail:     func(stallStreamMeta) { mu.Lock(); noTails++; mu.Unlock() },
+			clientDrop: func(stallStreamMeta, bool) { mu.Lock(); drops++; mu.Unlock() },
 		}}
 		fake.chunks <- cliproxyexecutor.StreamChunk{Payload: geminiish}
 		close(fake.chunks)
@@ -551,8 +566,8 @@ func TestUnarmedStreamStaysSilent(t *testing.T) {
 		var noTails, drops int
 		var mu sync.Mutex
 		g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
-			noTail:     func() { mu.Lock(); noTails++; mu.Unlock() },
-			clientDrop: func(bool) { mu.Lock(); drops++; mu.Unlock() },
+			noTail:     func(stallStreamMeta) { mu.Lock(); noTails++; mu.Unlock() },
+			clientDrop: func(stallStreamMeta, bool) { mu.Lock(); drops++; mu.Unlock() },
 		}}
 		fake.chunks <- cliproxyexecutor.StreamChunk{Payload: geminiish}
 
@@ -585,7 +600,7 @@ func TestClientDropAccountedAfterTail(t *testing.T) {
 	var drops []bool
 	var mu sync.Mutex
 	g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
-		clientDrop: func(accounted bool) { mu.Lock(); drops = append(drops, accounted); mu.Unlock() },
+		clientDrop: func(_ stallStreamMeta, accounted bool) { mu.Lock(); drops = append(drops, accounted); mu.Unlock() },
 	}}
 
 	reqCtx, hangUp := context.WithCancel(context.Background())
@@ -678,9 +693,9 @@ func TestEnsureStallGuardWrapsAndReasserts(t *testing.T) {
 	mgr.RegisterExecutor(fake)
 
 	notes := stallGuardNotes{
-		stalled:    func(time.Duration) {},
-		noTail:     func() {},
-		clientDrop: func(bool) {},
+		stalled:    func(stallStreamMeta, time.Duration) {},
+		noTail:     func(stallStreamMeta) {},
+		clientDrop: func(stallStreamMeta, bool) {},
 	}
 	requireWired := func(t *testing.T, when string) *stallGuard {
 		t.Helper()
