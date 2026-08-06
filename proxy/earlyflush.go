@@ -144,9 +144,17 @@ type earlyFlushNotes struct {
 	// client's non-streaming call parses the body as JSON and reports
 	// "empty or malformed response (HTTP 200)", an error it cannot retry
 	// around, where the 524 this risks is an honest failure retried
-	// automatically. Measured 2026-08-06: Claude Code's non-streaming
-	// fallback sends exactly these large stream:false bodies, ~9 per
-	// afternoon through the slow tunnel.
+	// automatically.
+	//
+	// Defense in depth, not a measured save -- audited honestly 2026-08-06:
+	// Claude Code's non-streaming fallback does send large stream:false
+	// bodies (9 that afternoon), but they uploaded in ~1-2s and never came
+	// near the 80s deadline; every desperation firing that day was a large
+	// streaming body. This guard matters if uploads ever slow to where
+	// non-streaming bodies cross the deadline -- and even then only when the
+	// stream field lands in the prefix, which for a client that serializes
+	// it after the messages array it may not. The verdict recorded on
+	// flushed is what sizes that residue from data.
 	desperationHeld func(wait time.Duration)
 	// translated fires when a post-preamble failure is delivered as an
 	// in-stream error event instead of its HTTP status.

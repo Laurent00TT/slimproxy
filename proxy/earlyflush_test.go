@@ -356,6 +356,57 @@ func TestEarlyFlushDesperationBetsOnUnknownPrefix(t *testing.T) {
 	}
 }
 
+// TestEarlyFlushDesperationResidueSurvives drives the residual path the
+// arming cannot close: desperation fires on verdictUnknown (stream field not
+// in the prefix), the full body then rules non-streaming, tryDisarm returns
+// false because the preamble is committed, and the wrapper must stay
+// installed to deliver the JSON in-stream without crash, hang, or detaching
+// with committed headers. Review found this path lost its only test when the
+// old blind-desperation test was replaced; a regression here would ship a
+// broken teardown for exactly the requests the verdictUnknown journal note
+// exists to count.
+func TestEarlyFlushDesperationResidueSurvives(t *testing.T) {
+	oldD := earlyFlushDesperation
+	earlyFlushDesperation = 60 * time.Millisecond
+	defer func() { earlyFlushDesperation = oldD }()
+
+	var sawVerdict atomic.Int64
+	sawVerdict.Store(-1)
+	notes := earlyFlushNotes{
+		flushed: func(_ time.Duration, v streamVerdict) { sawVerdict.Store(int64(v)) },
+	}
+
+	// stream:false trails the messages array, so the desperation-time prefix
+	// has no verdict and the preamble goes out on the odds.
+	body := `{"messages":[{"role":"user","content":"hello"}],"stream":false}`
+	r := gin.New()
+	r.Use(EarlyFlushMiddleware(earlyFlushTestDelay, notes))
+	r.POST("/v1/messages", func(c *gin.Context) {
+		c.Data(http.StatusOK, "application/json", []byte(`{"id":"msg_1"}`))
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", &slowReader{
+		first: strings.NewReader(body[:20]),
+		rest:  strings.NewReader(body[20:]),
+		pause: 4 * earlyFlushDesperation,
+	})
+	req.ContentLength = int64(len(body))
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want the committed 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Errorf("Content-Type = %q; the committed preamble cannot be unsent", ct)
+	}
+	if !strings.Contains(rec.Body.String(), `{"id":"msg_1"}`) {
+		t.Errorf("body %q lost the JSON response; the wrapper must deliver it in-stream", rec.Body.String())
+	}
+	if got := streamVerdict(sawVerdict.Load()); got != verdictUnknown {
+		t.Errorf("flushed verdict = %v, want verdictUnknown", got)
+	}
+}
+
 // TestSniffStreamField pins the three-state prefix predicate.
 func TestSniffStreamField(t *testing.T) {
 	cases := []struct {
