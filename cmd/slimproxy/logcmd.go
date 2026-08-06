@@ -293,6 +293,22 @@ func stateDetail(e journal.Event) string {
 	if e.State != "" {
 		parts = append(parts, e.State)
 	}
+	// The stall guard's health events carry the stream they are about --
+	// model, credential, how far in. Rendered here, or the fields would exist
+	// only for jq readers and the whole point of stamping them (answering
+	// "which model, whose key" without the raw JSONL) would be lost. Absent
+	// on every other state event, so their rows are unchanged.
+	if e.Model != "" {
+		parts = append(parts, shortModel(e.Model))
+	}
+	if e.Auth != "" {
+		parts = append(parts, shortAuth(e.Auth))
+	}
+	if e.LatencyMs > 0 {
+		// Second precision, not shortDuration's minutes: stream ages worth
+		// showing start well under a minute, and "0 分钟" reads as a bug.
+		parts = append(parts, (time.Duration(e.LatencyMs) * time.Millisecond).Truncate(time.Second).String())
+	}
 	if e.Level != "" {
 		parts = append(parts, e.Level)
 	}

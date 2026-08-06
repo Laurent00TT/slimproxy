@@ -209,3 +209,27 @@ func TestVersionNamesThePublishedUpstream(t *testing.T) {
 		t.Errorf("受控的 third_party fork 不该用「本地 checkout」的怀疑措辞:\n%s", got)
 	}
 }
+
+// TestCommittedForkPathResolvesNotSpells: the trusted-fork wording must go by
+// where the replace target RESOLVES. A raw prefix check would let
+// "./third_party/../../elsewhere" -- a directory outside the repository --
+// borrow the committed fork's reproducibility claim.
+func TestCommittedForkPathResolvesNotSpells(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"./third_party/CLIProxyAPI", true},
+		{"third_party/CLIProxyAPI", true},
+		{"./third_party/CLIProxyAPI/../CLIProxyAPI", true},
+		{"./third_party/../../CLIProxyAPI-wip", false},
+		{"./third_party/..", false},
+		{"../CLIProxyAPI", false},
+		{"./third_party_evil/x", false},
+	}
+	for _, tc := range cases {
+		if got := isCommittedForkPath(tc.path); got != tc.want {
+			t.Errorf("isCommittedForkPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}

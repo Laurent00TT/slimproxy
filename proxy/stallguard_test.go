@@ -220,16 +220,18 @@ func TestSlowConsumerIsNotAStall(t *testing.T) {
 func TestStallIsReportedByTheGuardItself(t *testing.T) {
 	fake := &stallFakeExecutor{chunks: make(chan cliproxyexecutor.StreamChunk, 1)}
 	var reported []time.Duration
+	var stallMetas []stallStreamMeta
 	var noTails, drops int
 	var mu sync.Mutex
 	g := &stallGuard{
 		inner: fake,
 		idle:  80 * time.Millisecond,
 		notes: stallGuardNotes{
-			stalled: func(_ stallStreamMeta, d time.Duration) {
+			stalled: func(m stallStreamMeta, d time.Duration) {
 				mu.Lock()
 				defer mu.Unlock()
 				reported = append(reported, d)
+				stallMetas = append(stallMetas, m)
 			},
 			noTail: func(stallStreamMeta) { mu.Lock(); noTails++; mu.Unlock() },
 			clientDrop: func(stallStreamMeta, bool) { mu.Lock(); drops++; mu.Unlock() },
@@ -238,7 +240,8 @@ func TestStallIsReportedByTheGuardItself(t *testing.T) {
 
 	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: []byte("a")}
 
-	result, err := g.ExecuteStream(context.Background(), &coreauth.Auth{}, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
+	result, err := g.ExecuteStream(context.Background(), &coreauth.Auth{ID: "stall-auth"},
+		cliproxyexecutor.Request{Model: "claude-opus-5"}, cliproxyexecutor.Options{})
 	if err != nil {
 		t.Fatalf("ExecuteStream: %v", err)
 	}
@@ -255,6 +258,11 @@ func TestStallIsReportedByTheGuardItself(t *testing.T) {
 	}
 	if reported[0] != 80*time.Millisecond {
 		t.Errorf("上报的窗口 = %v, want 80ms", reported[0])
+	}
+	// The stall path must thread the stream identity too, or its journal row
+	// loses model/credential while the notail row keeps them.
+	if stallMetas[0].model != "claude-opus-5" || stallMetas[0].auth != "stall-auth" {
+		t.Errorf("stall 的 meta = %+v，model/auth 没有穿进来", stallMetas[0])
 	}
 	if noTails != 0 || drops != 0 {
 		t.Errorf("stall 退出还额外报了 noTail=%d clientDrop=%d：一次结局只该有一个名字", noTails, drops)
@@ -345,8 +353,10 @@ func TestNoTailReportedOnCleanEOFWithoutUsage(t *testing.T) {
 	if metas[0].model != "claude-opus-5" {
 		t.Errorf("meta.model = %q, want claude-opus-5", metas[0].model)
 	}
-	if metas[0].auth != "friend-key" {
-		t.Errorf("meta.auth = %q, want label 优先于 ID", metas[0].auth)
+	// ID, not the friendlier label: the adjacent KindRequest rows carry
+	// AuthID, and the health event must join against them on equal terms.
+	if metas[0].auth != "auth-id-1" {
+		t.Errorf("meta.auth = %q, want ID 优先（与 req 事件的 join key 一致）", metas[0].auth)
 	}
 	if metas[0].started.IsZero() {
 		t.Error("meta.started 是零值——事件算不出流龄")
@@ -598,16 +608,23 @@ func TestUnarmedStreamStaysSilent(t *testing.T) {
 func TestClientDropAccountedAfterTail(t *testing.T) {
 	fake := &stallFakeExecutor{chunks: make(chan cliproxyexecutor.StreamChunk, 2)}
 	var drops []bool
+	var dropMetas []stallStreamMeta
 	var mu sync.Mutex
 	g := &stallGuard{inner: fake, idle: time.Hour, notes: stallGuardNotes{
-		clientDrop: func(_ stallStreamMeta, accounted bool) { mu.Lock(); drops = append(drops, accounted); mu.Unlock() },
+		clientDrop: func(m stallStreamMeta, accounted bool) {
+			mu.Lock()
+			drops = append(drops, accounted)
+			dropMetas = append(dropMetas, m)
+			mu.Unlock()
+		},
 	}}
 
 	reqCtx, hangUp := context.WithCancel(context.Background())
 	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: sseEvent("message_start", `{"type":"message_start","message":{"id":"msg_1"}}`)}
 	fake.chunks <- cliproxyexecutor.StreamChunk{Payload: sseEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}`)}
 
-	result, err := g.ExecuteStream(reqCtx, &coreauth.Auth{}, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
+	result, err := g.ExecuteStream(reqCtx, &coreauth.Auth{ID: "drop-auth"},
+		cliproxyexecutor.Request{Model: "claude-opus-5"}, cliproxyexecutor.Options{})
 	if err != nil {
 		t.Fatalf("ExecuteStream: %v", err)
 	}
@@ -628,6 +645,10 @@ func TestClientDropAccountedAfterTail(t *testing.T) {
 	}
 	if !drops[0] {
 		t.Error("尾行已经过流，accounted 却是 false——会把记好账的取消误报成疑似丢账")
+	}
+	// clientDrop must carry the stream identity like the other two notes do.
+	if dropMetas[0].model != "claude-opus-5" || dropMetas[0].auth != "drop-auth" {
+		t.Errorf("clientDrop 的 meta = %+v，model/auth 没有穿进来", dropMetas[0])
 	}
 }
 

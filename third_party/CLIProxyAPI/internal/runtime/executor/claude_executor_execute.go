@@ -28,13 +28,6 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 
 	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
-	// slimproxy patch (see SLIMPROXY_PATCHES.md): the bypass branch below
-	// publishes per scanned usage line only, so a 200 whose SSE body carries
-	// no usage line published nothing. Declared BEFORE TrackFailure on
-	// purpose -- defers run LIFO, so TrackFailure gets first claim on the
-	// once (a real failure stays a failure) and this backstop only fires
-	// when the request would otherwise leave no record at all.
-	defer reporter.EnsurePublished(ctx)
 	defer reporter.TrackFailure(ctx, &err)
 	from := opts.SourceFormat
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
@@ -218,5 +211,14 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		&param,
 	)
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
+	// slimproxy patch (see SLIMPROXY_PATCHES.md): the bypass branch above
+	// publishes per scanned usage line only, so a 200 whose SSE body carries
+	// no usage line would return success having published nothing. Inline at
+	// the success exit -- the same shape as openai_compat_executor.go -- and
+	// deliberately NOT a defer: a defer would also run during a panic unwind,
+	// where the named err is still nil, and would file a request the client
+	// sees fail as a zero-token success. Error returns are TrackFailure's;
+	// a panic leaves no record, which is the lesser lie.
+	reporter.EnsurePublished(ctx)
 	return resp, nil
 }

@@ -37,9 +37,18 @@ Execute 的 bypass 分支（上游返回 SSE body）同样按行命中才发布�
 2. 用模块缓存新版本重建本目录（同样的排除清单），保留本文件与
    `claude_ensure_published_test.go`
 3. 按上面的清单重打两个补丁（grep 上游新代码确认发布点没变形）
-4. `go build ./... && go test ./third_party/... ./proxy/`
-5. slimproxy 根 `go.mod` 的 require 版本号同步改（replace 不看版本号，
-   但注释性版本号骗人会误导以后的自己）
+4. 仓库根目录 `go build ./... && go test ./...`。**不要**写
+   `go test ./third_party/...`：本目录是嵌套 module，根目录的包通配符
+   进不来——那条命令只会打一行 warning 然后 exit 0，一个 fork 测试都
+   没跑（评审实测过的假绿）。真正把守卫接进 `go test ./...` 的是根模块
+   的 `forkcheck` 包：它 cd 进本目录跑第 3 条补丁的回归测试（-run 只挑
+   两个 EnsurePublished 测试——上游自己的 xai TTFT 断言在 Windows 上
+   会因时钟粒度偶发翻红），并核对第 5 步的版本同步。
+   要手工全量跑上游套件时：`cd third_party/CLIProxyAPI && go test ./...`。
+5. slimproxy 根 `go.mod` 的 require 版本号同步改，**并且改本文件第一段
+   的版本号**——replace 生效时 require 版本纯属注释，但 `slimproxy
+   version` 会把它当作 fork 的基线报出去；forkcheck 的版本同步测试会在
+   两处不一致时翻红。
 
 # 撤销条件
 

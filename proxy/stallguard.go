@@ -136,8 +136,11 @@ func errStreamStalled(idle time.Duration) error {
 // still on hand -- the pump itself only ever sees chunks.
 type stallStreamMeta struct {
 	model string
-	// auth is the credential's label, or its ID when no label is set -- the
-	// same preference the SDK's own request log uses.
+	// auth is the credential's ID, falling back to its label. ID first is a
+	// join-key decision, not a readability one: the KindRequest events these
+	// health events sit next to carry usage.Record.AuthID (collector.go), and
+	// a jq join across the two rows must not depend on whether the credential
+	// happens to have a label.
 	auth    string
 	started time.Time
 }
@@ -231,8 +234,8 @@ func (g *stallGuard) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req
 	}
 	meta := stallStreamMeta{model: req.Model, started: time.Now()}
 	if auth != nil {
-		if meta.auth = auth.Label; meta.auth == "" {
-			meta.auth = auth.ID
+		if meta.auth = auth.ID; meta.auth == "" {
+			meta.auth = auth.Label
 		}
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)

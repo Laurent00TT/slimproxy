@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -56,7 +57,7 @@ func upstreamBuild() (version string, note string) {
 		if d.Replace == nil {
 			return d.Version, ""
 		}
-		if strings.HasPrefix(d.Replace.Path, "./third_party/") {
+		if isCommittedForkPath(d.Replace.Path) {
 			base := d.Version
 			if base == "" || base == "(devel)" {
 				base = d.Replace.Path
@@ -74,4 +75,17 @@ func upstreamBuild() (version string, note string) {
 			"\nnote: the upstream is a local checkout (a go.mod replace directive), not a released version.\n      The build depends on whatever that directory holds on this machine.\n")
 	}
 	return i18n.T("未链接", "not linked"), ""
+}
+
+// isCommittedForkPath reports whether a replace target resolves inside the
+// repository's third_party directory.
+//
+// Cleaned first, because the trust boundary is where the path RESOLVES, not
+// how it is spelled: "./third_party/../../elsewhere" starts with the trusted
+// prefix yet builds from a directory outside the repository, and a raw prefix
+// check would hand it the committed-fork wording -- quietly restoring the
+// exact blind spot the distrustful branch exists to name.
+func isCommittedForkPath(p string) bool {
+	cleaned := path.Clean(p)
+	return cleaned == "third_party" || strings.HasPrefix(cleaned, "third_party/")
 }
