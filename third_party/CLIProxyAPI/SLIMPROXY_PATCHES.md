@@ -31,6 +31,14 @@ Execute 的 bypass 分支（上游返回 SSE body）同样按行命中才发布�
    兜底行为的回归测试：假上游吐无尾行的 SSE，断言恰好一条零 token 记录；
    有尾行时断言恰好一条带 token 记录（once 不双记）。上游升级后先跑它。
 
+4. antigravity 凭据脱敏（`internal/auth/antigravity/constants.go`、
+   `internal/api/handlers/management/api_tools.go`、
+   `internal/runtime/executor/antigravity_executor.go`）：上游把自己的
+   Google OAuth client id/secret 硬编码在源码里，GitHub push protection
+   会拦下含它们的任何推送。三处置空——本部署不用 antigravity 提供商，
+   代价只是那条从未走过的 OAuth 流在 token 交换处失败。升级重建本目录后
+   grep `GOCSPX` 必须为零命中。
+
 # 升级上游版本的流程
 
 1. `go mod download github.com/router-for-me/CLIProxyAPI/v7@<新版本>`
