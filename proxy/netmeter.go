@@ -13,11 +13,20 @@ package proxy
 // ("upstream done -> client done" is ~0 by construction and would be a field
 // that never fires).
 //
-// Registration order is load-bearing: this must run BEFORE EarlyFlushMiddleware,
-// whose bodySniffer drains the network body and replaces it with a bytes.Reader
-// -- a meter behind it would clock the in-memory replay at ~0. EarlyFlush also
-// must stay the last registration (its writer closest to the handler), so this
-// one cannot be last. See the registration site in proxy.go.
+// Registration order is load-bearing: this must run BEFORE both middlewares
+// that drain the network body and replay it from memory -- FidelityProbe
+// (io.ReadAll on sampled /v1/messages bodies) and EarlyFlush (bodySniffer
+// replaces the body with a bytes.Reader). A meter behind either would clock
+// the in-memory replay at ~0. EarlyFlush also must stay the last registration
+// (its writer closest to the handler), so this one cannot be last. See the
+// registration site in proxy.go.
+//
+// Known undercount (wb_ms): ErrorEnvelope registers before this meter, so its
+// writer sits below the meter, closest to the network. The failure bodies it
+// buffers are written to the client in its own finish(), after the metered
+// chain has unwound -- those writes (a few hundred bytes) never pass the
+// meter and wb_ms misses them. Negligible, and consistent with the spec's
+// rule: undercount, never overcount.
 
 import (
 	"io"

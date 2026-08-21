@@ -452,6 +452,18 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 			// Keeps upstream policy refusals from reaching callers as an
 			// unexplained empty completion -- see RefusalHookMiddleware.
 			cliproxyapi.WithMiddleware(RefusalHookMiddleware()),
+			// Before BOTH body-draining middlewares, and the order is
+			// load-bearing: FidelityProbe (journal branch below) does an
+			// io.ReadAll on sampled /v1/messages bodies pre-Next, and
+			// EarlyFlush's bodySniffer drains and replaces the body with a
+			// bytes.Reader -- a meter registered behind either one would clock
+			// the in-memory replay at ~0ms instead of the tunnel upload.
+			// EarlyFlush must itself stay the last registration (its writer
+			// closest to the handler; see its comment below), so the meter
+			// cannot be last. TestNetMeterOrderAgainstEarlyFlush and
+			// TestNetMeterOrderAgainstFidelityProbe pin the gin semantics;
+			// TestNetMeterRegisteredBeforeBodyDrainers pins this file.
+			cliproxyapi.WithMiddleware(NetMeterMiddleware()),
 		)
 
 	// The credential pool is only reachable through BaseAPIHandler.AuthManager,
@@ -530,13 +542,6 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 			// exists to prevent.
 			ensureStallGuard(h.AuthManager, rt.streamIdle, rt.stallNotes())
 		}),
-		// Before EarlyFlush, and the order is load-bearing: earlyflush drains
-		// and replaces the request body (bodySniffer.readAll), so a meter
-		// registered behind it would clock the in-memory replay at ~0ms
-		// instead of the tunnel upload -- and EarlyFlush must itself stay
-		// last (its writer closest to the handler; see its comment below).
-		// TestNetMeterOrderAgainstEarlyFlush pins this.
-		cliproxyapi.WithMiddleware(NetMeterMiddleware()),
 		// Registered here rather than in the journal branch above, for the same
 		// reason the health tracker is: what is running right now is a property
 		// of the display, not of the diary, and putting it up there would mean

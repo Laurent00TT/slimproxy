@@ -65,10 +65,14 @@ func (n *NetTimings) WriteBlock() time.Duration {
 // netTimingsKey is unexported so only this package mints the context entry.
 type netTimingsKey struct{}
 
-// WithNetTimings hangs the timings on a request context. The value rides the
-// same context the fork already threads to usage publication (the
-// ResponseHeaders mechanism is the precedent), which is what lets
-// HandleUsage recover it without any fork change.
+// WithNetTimings hangs the timings on a request context. The value reaches
+// usage publication because the fork's GetContextWithCancel is patched to
+// build the executor ctx on the request ctx (SLIMPROXY_PATCHES.md, the
+// reparenting patch) -- upstream builds it on context.Background(), which
+// would strand this value in the request ctx. (The fork's ResponseHeaders
+// mechanism is NOT a precedent for this: it rides a holder seeded on the new
+// ctx, not request-ctx inheritance.) The forkcheck reparent guard and
+// proxy's TestNetTimingsSurviveForkContextHop are the sentinels.
 func WithNetTimings(ctx context.Context, nt *NetTimings) context.Context {
 	return context.WithValue(ctx, netTimingsKey{}, nt)
 }

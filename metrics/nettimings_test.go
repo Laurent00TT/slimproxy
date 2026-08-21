@@ -69,4 +69,14 @@ func TestHandleUsageMergesNetTimings(t *testing.T) {
 	if got.Upload != 0 || got.WriteBlock != 0 {
 		t.Fatalf("bare ctx produced Upload=%v WriteBlock=%v, want zeros", got.Upload, got.WriteBlock)
 	}
+
+	// nil ctx 不得 panic：fork 的 safeInvoke 虽会兜住，但样本会随 panic 一起
+	// 丢——这里必须照常记录（三段为零）。
+	c.HandleUsage(nil, cliproxyusage.Record{Model: "nilctx"})
+	if got.Model != "nilctx" {
+		t.Fatalf("nil ctx 的样本丢了：observed %q", got.Model)
+	}
+	if got.Upload != 0 || got.WriteBlock != 0 {
+		t.Fatalf("nil ctx produced Upload=%v WriteBlock=%v, want zeros", got.Upload, got.WriteBlock)
+	}
 }

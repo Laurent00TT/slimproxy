@@ -270,14 +270,24 @@ func NewCollector() *Collector {
 func (c *Collector) HandleUsage(ctx context.Context, r cliproxyusage.Record) {
 	sample := SampleFrom(r)
 
-	// The one use this process makes of the publish context. The fork threads
-	// the request context through PublishRecord (its ResponseHeaders mechanism
-	// depends on the same fact); if a fork upgrade ever severs that, these
-	// fields silently stop appearing -- TestHandleUsageMergesNetTimings is the
-	// slimproxy-side sentinel, and the spec records the residual risk.
-	if nt := NetTimingsFrom(ctx); nt != nil {
-		sample.Upload = nt.Upload()
-		sample.WriteBlock = nt.WriteBlock()
+	// The one use this process makes of the publish context. The executor ctx
+	// descends from the request ctx ONLY because of the fork's reparenting
+	// patch on GetContextWithCancel (SLIMPROXY_PATCHES.md; upstream builds it
+	// on context.Background(), which severs the value chain -- the fork's own
+	// ResponseHeaders mechanism is no precedent: it rides a holder seeded on
+	// the NEW ctx, not request-ctx inheritance). If a fork upgrade drops the
+	// patch, these fields silently stop appearing. Sentinels: forkcheck's
+	// TestForkContextReparentGuard and proxy's
+	// TestNetTimingsSurviveForkContextHop cover the fork hop;
+	// TestHandleUsageMergesNetTimings covers this function alone.
+	//
+	// nil ctx guard: ctx.Value on a nil ctx panics, and while the fork's
+	// safeInvoke would recover it, the sample would be lost with it.
+	if ctx != nil {
+		if nt := NetTimingsFrom(ctx); nt != nil {
+			sample.Upload = nt.Upload()
+			sample.WriteBlock = nt.WriteBlock()
+		}
 	}
 
 	c.mu.Lock()
