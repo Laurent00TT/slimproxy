@@ -71,31 +71,19 @@ type meterWriter struct {
 func (w *meterWriter) Write(b []byte) (int, error) {
 	t := time.Now()
 	n, err := w.ResponseWriter.Write(b)
-	d := time.Since(t)
-	if d < time.Nanosecond {
-		d = time.Nanosecond
-	}
-	w.nt.AddWriteBlock(d)
+	w.nt.AddWriteBlock(time.Since(t))
 	return n, err
 }
 
 func (w *meterWriter) WriteString(s string) (int, error) {
 	t := time.Now()
 	n, err := w.ResponseWriter.WriteString(s)
-	d := time.Since(t)
-	if d < time.Nanosecond {
-		d = time.Nanosecond
-	}
-	w.nt.AddWriteBlock(d)
+	w.nt.AddWriteBlock(time.Since(t))
 	return n, err
 }
 
 func (w *meterWriter) Flush() {
 	t := time.Now()
 	w.ResponseWriter.Flush()
-	d := time.Since(t)
-	if d < time.Nanosecond {
-		d = time.Nanosecond
-	}
-	w.nt.AddWriteBlock(d)
+	w.nt.AddWriteBlock(time.Since(t))
 }

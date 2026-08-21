@@ -30,6 +30,20 @@ func (r *chunkedSlowReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// slowRecorder delays every Write so the meter has something real to
+// measure: on this host an httptest recorder write takes ~0ns, which the
+// accumulator correctly drops (the spec mandates undercount-never-overcount,
+// so there is no floor to make fast writes visible).
+type slowRecorder struct {
+	*httptest.ResponseRecorder
+	delay time.Duration
+}
+
+func (r *slowRecorder) Write(b []byte) (int, error) {
+	time.Sleep(r.delay)
+	return r.ResponseRecorder.Write(b)
+}
+
 func TestNetMeterMeasuresUploadAndWriteBlock(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	var seen *metrics.NetTimings
@@ -47,7 +61,7 @@ func TestNetMeterMeasuresUploadAndWriteBlock(t *testing.T) {
 		chunks: []string{"aaaa", "bbbb", "cccc"},
 		delay:  20 * time.Millisecond,
 	})
-	w := httptest.NewRecorder()
+	w := &slowRecorder{ResponseRecorder: httptest.NewRecorder(), delay: 5 * time.Millisecond}
 	r.ServeHTTP(w, req)
 
 	if seen == nil {
@@ -57,9 +71,9 @@ func TestNetMeterMeasuresUploadAndWriteBlock(t *testing.T) {
 	if got := seen.Upload(); got < 60*time.Millisecond {
 		t.Fatalf("upload = %v, want >= 60ms", got)
 	}
-	// httptest 的写不阻塞，但每次 Write 仍应被计入（>0 即可）。
-	if seen.WriteBlock() <= 0 {
-		t.Fatalf("writeblock = %v, want > 0", seen.WriteBlock())
+	// slowRecorder injects 5ms per write, c.String should call Write at least once.
+	if got := seen.WriteBlock(); got < 5*time.Millisecond {
+		t.Fatalf("writeblock = %v, want >= 5ms", got)
 	}
 }
 
