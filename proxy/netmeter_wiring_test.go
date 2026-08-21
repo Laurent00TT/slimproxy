@@ -45,8 +45,13 @@ func TestNetTimingsSurviveForkContextHop(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader("{}"))
-	nt := metrics.NewNetTimings(time.Now())
-	nt.MarkBodyDone(time.Now().Add(300 * time.Millisecond))
+	// One clock read: MarkBodyDone stores now.Sub(started), so deriving both
+	// stamps from the same instant is what makes the exact-equality assertion
+	// below deterministic. Two time.Now() calls would add the inter-call delta
+	// (~0 on Windows' coarse clock, tens of ns on Linux/macOS) and fail there.
+	t0 := time.Now()
+	nt := metrics.NewNetTimings(t0)
+	nt.MarkBodyDone(t0.Add(300 * time.Millisecond))
 	nt.AddWriteBlock(40 * time.Millisecond)
 	c.Request = req.WithContext(metrics.WithNetTimings(req.Context(), nt))
 
