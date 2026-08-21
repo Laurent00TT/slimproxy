@@ -97,3 +97,39 @@ func TestNetMeterLeavesBodylessRequestsAlone(t *testing.T) {
 		t.Fatalf("bodyless upload = %v, want ~0", seen.Upload())
 	}
 }
+
+// 次序契约：NetMeter 必须在 EarlyFlush 之外。earlyflush 会把网络 body 抽干
+// 换成 bytes.Reader；装反时上传腿测到的是内存重放（~0），数字静默变谎。
+// 两个方向都测：正确次序测出慢上传，错误次序测不出——后者一旦开始"测得出"，
+// 说明 earlyflush 的抽干行为变了，本契约要重审。
+func TestNetMeterOrderAgainstEarlyFlush(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upload := func(first, second gin.HandlerFunc) time.Duration {
+		var seen *metrics.NetTimings
+		r := gin.New()
+		r.Use(first, second)
+		r.POST("/v1/messages", func(c *gin.Context) {
+			_, _ = io.ReadAll(c.Request.Body)
+			seen = metrics.NetTimingsFrom(c.Request.Context())
+			c.String(200, "{}")
+		})
+		body := `{"stream":true,"messages":[]}`
+		req := httptest.NewRequest("POST", "/v1/messages",
+			&chunkedSlowReader{chunks: []string{body[:8], body[8:]}, delay: 30 * time.Millisecond})
+		req.ContentLength = int64(len(body))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if seen == nil {
+			t.Fatal("handler saw no NetTimings")
+		}
+		return seen.Upload()
+	}
+
+	ef := EarlyFlushMiddleware(time.Hour, earlyFlushNotes{})
+	if got := upload(NetMeterMiddleware(), ef); got < 60*time.Millisecond {
+		t.Fatalf("meter-first upload = %v, want >= 60ms", got)
+	}
+	if got := upload(ef, NetMeterMiddleware()); got >= 60*time.Millisecond {
+		t.Fatalf("meter-behind-earlyflush upload = %v, want ~0 (the contract this test pins)", got)
+	}
+}

@@ -530,6 +530,13 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 			// exists to prevent.
 			ensureStallGuard(h.AuthManager, rt.streamIdle, rt.stallNotes())
 		}),
+		// Before EarlyFlush, and the order is load-bearing: earlyflush drains
+		// and replaces the request body (bodySniffer.readAll), so a meter
+		// registered behind it would clock the in-memory replay at ~0ms
+		// instead of the tunnel upload -- and EarlyFlush must itself stay
+		// last (its writer closest to the handler; see its comment below).
+		// TestNetMeterOrderAgainstEarlyFlush pins this.
+		cliproxyapi.WithMiddleware(NetMeterMiddleware()),
 		// Registered here rather than in the journal branch above, for the same
 		// reason the health tracker is: what is running right now is a property
 		// of the display, not of the diary, and putting it up there would mean
