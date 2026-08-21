@@ -168,3 +168,20 @@ func TestQuotaAbsentIsNotZero(t *testing.T) {
 		t.Errorf("没有配额读数时应为负，实际 %v", s.MaxQuota)
 	}
 }
+
+// TestSummariseAveragesNetLegs: an event with no reading is "not measured",
+// never "instant" -- averaging it in as zero would flatter the tunnel.
+func TestSummariseAveragesNetLegs(t *testing.T) {
+	ok := true
+	s := Summarise([]Event{
+		{Kind: KindRequest, OK: &ok, UploadMs: 100, WriteBlockMs: 30},
+		{Kind: KindRequest, OK: &ok, UploadMs: 300},
+		{Kind: KindRequest, OK: &ok}, // 旧事件无字段，不得拉低均值
+	})
+	if s.AvgUploadMs != 200 {
+		t.Fatalf("AvgUploadMs = %d, want 200", s.AvgUploadMs)
+	}
+	if s.AvgWriteBlockMs != 30 {
+		t.Fatalf("AvgWriteBlockMs = %d, want 30", s.AvgWriteBlockMs)
+	}
+}

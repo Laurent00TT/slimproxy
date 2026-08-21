@@ -252,6 +252,13 @@ type Summary struct {
 	SlowestMs int64
 	P50Ms     int64
 
+	// AvgUploadMs and AvgWriteBlockMs average the two net legs over the
+	// matches that carry them. Events from before the meter (or that never
+	// passed it) are excluded from the denominator -- an absent reading is
+	// "not measured", and averaging it in as zero would flatter the tunnel.
+	AvgUploadMs     int64
+	AvgWriteBlockMs int64
+
 	// MaxQuota is the highest five-hour window utilisation seen, or -1.
 	MaxQuota float64
 
@@ -274,6 +281,7 @@ type Summary struct {
 func Summarise(events []Event) Summary {
 	s := Summary{ByStatus: map[int]int{}, MaxQuota: -1}
 	var lat []int64
+	var upSum, upN, wbSum, wbN int64
 	for _, e := range events {
 		switch e.Kind {
 		case KindRequest:
@@ -284,6 +292,14 @@ func Summarise(events []Event) Summary {
 			}
 			if e.LatencyMs > 0 {
 				lat = append(lat, e.LatencyMs)
+			}
+			if e.UploadMs > 0 {
+				upSum += e.UploadMs
+				upN++
+			}
+			if e.WriteBlockMs > 0 {
+				wbSum += e.WriteBlockMs
+				wbN++
 			}
 			if e.Quota5h != nil && *e.Quota5h > s.MaxQuota {
 				s.MaxQuota = *e.Quota5h
@@ -312,6 +328,12 @@ func Summarise(events []Event) Summary {
 		sortInt64(lat)
 		s.SlowestMs = lat[len(lat)-1]
 		s.P50Ms = lat[len(lat)/2]
+	}
+	if upN > 0 {
+		s.AvgUploadMs = upSum / upN
+	}
+	if wbN > 0 {
+		s.AvgWriteBlockMs = wbSum / wbN
 	}
 	return s
 }

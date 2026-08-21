@@ -98,22 +98,23 @@ func journalDir(cx *cliContext) (string, error) {
 
 func writeEventTable(cx *cliContext, events []journal.Event) {
 	tw := tabwriter.NewWriter(cx.stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, i18n.T("  时间\t状态\t路由\t模型\t首字\t总时长\t说明", "  time\tstatus\troute\tmodel\tttft\ttotal\tnotes"))
+	fmt.Fprintln(tw, i18n.T("  时间\t状态\t路由\t模型\t首字\t总时长\t网络\t说明", "  time\tstatus\troute\tmodel\tttft\ttotal\tnet\tnotes"))
 	for _, e := range events {
 		switch e.Kind {
 		case journal.KindRequest:
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				e.At.Format("01-02 15:04:05"),
 				requestStatus(e),
 				dashIfEmpty(e.Route),
 				dashIfEmpty(shortModel(e.Model)),
 				msOrDash(e.TTFTMs),
 				msOrDash(e.LatencyMs),
+				netCell(e),
 				requestNote(e))
 		case journal.KindReject:
-			fmt.Fprintf(tw, "  %s\t%d\t%s\t%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(tw, "  %s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				e.At.Format("01-02 15:04:05"), e.Status,
-				string(e.Src), dashIfEmpty(e.Path), "—", "—",
+				string(e.Src), dashIfEmpty(e.Path), "—", "—", "—",
 				fmt.Sprintf(i18n.T("被拒 ×%d", "refused ×%d"), maxInt(e.Count, 1)))
 		case journal.KindFidelity:
 			// The inbound shape gets the full row too: it is the half of the
@@ -151,6 +152,9 @@ func writeJournalSummary(cx *cliContext, s journal.Summary, since time.Duration)
 
 	if s.P50Ms > 0 {
 		fmt.Fprintf(cx.stdout, i18n.T("  时延 p50 %s，最慢 %s\n", "  latency p50 %s, slowest %s\n"), msOrDash(s.P50Ms), msOrDash(s.SlowestMs))
+	}
+	if s.AvgUploadMs > 0 || s.AvgWriteBlockMs > 0 {
+		fmt.Fprintf(cx.stdout, i18n.T("  网络 上传均值 %s，回写阻塞均值 %s\n", "  network: avg upload %s, avg write-block %s\n"), msOrDash(s.AvgUploadMs), msOrDash(s.AvgWriteBlockMs))
 	}
 	// The cache verdict, stated rather than left to be computed from two
 	// columns. On a subscription this is what decides whether a long
@@ -204,6 +208,22 @@ func requestStatus(e journal.Event) string {
 		return string(e.Cause)
 	}
 	return "err"
+}
+
+// netCell renders the two net legs, or a dash when the event predates the
+// meter. The upstream leg is not repeated here -- it is the 总时长 column.
+func netCell(e journal.Event) string {
+	var parts []string
+	if e.UploadMs > 0 {
+		parts = append(parts, i18n.T("传", "up ")+msOrDash(e.UploadMs))
+	}
+	if e.WriteBlockMs > 0 {
+		parts = append(parts, i18n.T("写", "wr ")+msOrDash(e.WriteBlockMs))
+	}
+	if len(parts) == 0 {
+		return "—"
+	}
+	return strings.Join(parts, "┊")
 }
 
 // requestNote carries what does not fit a column: cache activity, which
