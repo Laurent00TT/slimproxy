@@ -32,6 +32,32 @@ func TestForkPatchRegressionSuite(t *testing.T) {
 	}
 }
 
+// TestForkContextReparentGuard runs the fork's guard tests for the
+// GetContextWithCancel reparenting patch (SLIMPROXY_PATCHES.md 第 5/6 条)。
+//
+// What it defends: the executor ctx must inherit the request ctx's value
+// chain, or metrics.NetTimings dies at the fork boundary and every request
+// publishes with up_ms/wb_ms absent -- silently, because the slimproxy-side
+// unit tests each cover their own half of the hop and stay green. The
+// slimproxy-side wiring test (proxy/netmeter_wiring_test.go) exercises the
+// same property through the real usage manager; this one keeps the fork's own
+// three-way contract (values inherited, cancellation preserved, explicit
+// parents respected) running even when someone touches only the fork.
+func TestForkContextReparentGuard(t *testing.T) {
+	if _, err := os.Stat(forkDir); err != nil {
+		t.Fatalf("fork 目录不见了（%s）：go.mod 的 replace 会让所有构建失败", forkDir)
+	}
+	cmd := exec.Command("go", "test", "-count=1",
+		"-run", "TestContextReparent(InheritsRequestValues|KeepsCancelPropagation|RespectsExplicitParent)",
+		"./sdk/api/handlers/")
+	cmd.Dir = forkDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("fork 的 ctx 重挂守卫失败——GetContextWithCancel 的重挂补丁可能被升级冲掉了，"+
+			"net-leg 三段计时会静默消失：\n%s", out)
+	}
+}
+
 // TestForkBaselineVersionMatchesPatchDoc pins the version bookkeeping nothing
 // else enforces: with a directory replace active, go.mod's require version is
 // pure annotation (the build always comes from third_party/), and `slimproxy

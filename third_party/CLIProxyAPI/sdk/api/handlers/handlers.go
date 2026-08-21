@@ -391,6 +391,18 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 		requestCtx = c.Request.Context()
 	}
 
+	// slimproxy patch: when the caller supplies no real parent (every dialect
+	// handler passes context.Background()), build the executor context on the
+	// request context so its VALUE chain survives into async usage publication
+	// (metrics.NetTimingsFrom needs it there). Cancellation semantics are
+	// unchanged: the goroutine below already bridged request-ctx cancellation
+	// into the new context; direct parentage does the same thing without the
+	// goroutine, and the requestCtx != parentCtx guard then skips it. Callers
+	// that pass their own parent (the responses websocket) keep it untouched.
+	if requestCtx != nil && parentCtx == context.Background() {
+		parentCtx = requestCtx
+	}
+
 	if requestCtx != nil && logging.GetRequestID(parentCtx) == "" {
 		if requestID := logging.GetRequestID(requestCtx); requestID != "" {
 			parentCtx = logging.WithRequestID(parentCtx, requestID)

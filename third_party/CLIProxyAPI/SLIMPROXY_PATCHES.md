@@ -39,19 +39,42 @@ Execute 的 bypass 分支（上游返回 SSE body）同样按行命中才发布�
    代价只是那条从未走过的 OAuth 流在 token 交换处失败。升级重建本目录后
    grep `GOCSPX` 必须为零命中。
 
+5. `sdk/api/handlers/handlers.go` `GetContextWithCancel` 执行 ctx 重挂：
+   上游所有方言 handler 调它时 parent 都传 `context.Background()`（claude/
+   gemini/openai 各文件；唯一例外是 responses websocket 自带 parent），
+   执行 ctx 因此不继承请求 ctx 的值链——slimproxy 在请求 ctx 上装的
+   `metrics.NetTimings` 到不了异步 usage 发布，三段计时对所有真实请求
+   静默为零。补丁：parent 为 nil / `context.Background()` 且请求 ctx
+   存在时，改以请求 ctx 为 parent。取消语义不变：原有的 cancel 桥接
+   goroutine 干的就是「请求 ctx 取消 → 新 ctx 取消」，直接父子关系
+   等价且省掉 goroutine（`requestCtx != parentCtx` 守卫自动跳过它）；
+   request-ID 回退逻辑两个分支都仍可达。发布路径的 ctx 消费者已核对
+   只读值不问死活（redisqueue / metrics.Collector 只取 value；rpc 插件
+   适配器对已取消 ctx 的暴露程度与补丁前相同——cancel 本来就先于
+   异步派发）。
+
+6. `sdk/api/handlers/slimproxy_context_reparent_test.go`（新增文件）
+   第 5 条的行为守卫：值链继承、取消传播不变、显式 parent 不被覆盖，
+   三者各一个测试。forkcheck 的 TestForkContextReparentGuard 把它们接进
+   根模块 `go test ./...`；slimproxy 侧另有 proxy/netmeter_wiring_test.go
+   走真实 usage manager 全链路断言同一性质（写在补丁之前、对未打补丁的
+   fork 实测为红）。上游升级后先跑这两处。
+
 # 升级上游版本的流程
 
 1. `go mod download github.com/router-for-me/CLIProxyAPI/v7@<新版本>`
-2. 用模块缓存新版本重建本目录（同样的排除清单），保留本文件与
-   `claude_ensure_published_test.go`
-3. 按上面的清单重打两个补丁（grep 上游新代码确认发布点没变形）
+2. 用模块缓存新版本重建本目录（同样的排除清单），保留本文件、
+   `claude_ensure_published_test.go` 与 `slimproxy_context_reparent_test.go`
+3. 按上面的清单重打全部补丁（grep 上游新代码确认发布点与
+   `GetContextWithCancel` 没变形；grep `slimproxy patch` 核对齐全）
 4. 仓库根目录 `go build ./... && go test ./...`。**不要**写
    `go test ./third_party/...`：本目录是嵌套 module，根目录的包通配符
    进不来——那条命令只会打一行 warning 然后 exit 0，一个 fork 测试都
    没跑（评审实测过的假绿）。真正把守卫接进 `go test ./...` 的是根模块
    的 `forkcheck` 包：它 cd 进本目录跑第 3 条补丁的回归测试（-run 只挑
    两个 EnsurePublished 测试——上游自己的 xai TTFT 断言在 Windows 上
-   会因时钟粒度偶发翻红），并核对第 5 步的版本同步。
+   会因时钟粒度偶发翻红）和第 6 条的三个 ctx 重挂守卫，
+   并核对第 5 步的版本同步。
    要手工全量跑上游套件时：`cd third_party/CLIProxyAPI && go test ./...`。
 5. slimproxy 根 `go.mod` 的 require 版本号同步改，**并且改本文件第一段
    的版本号**——replace 生效时 require 版本纯属注释，但 `slimproxy
