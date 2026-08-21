@@ -189,3 +189,23 @@ func TestEventsRotateByDay(t *testing.T) {
 		t.Fatalf("应写出两天的文件，实际 %v", days)
 	}
 }
+
+func TestFromSampleProjectsNetLegs(t *testing.T) {
+	e := FromSample(metrics.Sample{
+		Model:      "claude-x",
+		Latency:    2 * time.Second,
+		Upload:     900 * time.Millisecond,
+		WriteBlock: 150 * time.Millisecond,
+	})
+	if e.UploadMs != 900 {
+		t.Fatalf("UploadMs = %d, want 900", e.UploadMs)
+	}
+	if e.WriteBlockMs != 150 {
+		t.Fatalf("WriteBlockMs = %d, want 150", e.WriteBlockMs)
+	}
+	// 亚毫秒读数落整为 0 并因 omitempty 缺席——绝不写出一个撒谎的 0ms 字段。
+	e = FromSample(metrics.Sample{Model: "claude-x", Upload: 300 * time.Microsecond})
+	if e.UploadMs != 0 {
+		t.Fatalf("sub-ms UploadMs = %d, want 0", e.UploadMs)
+	}
+}

@@ -299,6 +299,12 @@ func FromSample(s metrics.Sample) Event {
 	if s.Latency > 0 {
 		e.LatencyMs = s.Latency.Milliseconds()
 	}
+	if s.Upload > 0 {
+		e.UploadMs = s.Upload.Milliseconds()
+	}
+	if s.WriteBlock > 0 {
+		e.WriteBlockMs = s.WriteBlock.Milliseconds()
+	}
 	if s.HasQuota() {
 		e.Quota5h = f64Ptr(s.Quota5h)
 	}

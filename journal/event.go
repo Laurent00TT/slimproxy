@@ -101,7 +101,14 @@ type Event struct {
 	// because they fail differently.
 	TTFTMs    int64 `json:"ttft_ms,omitempty"`
 	LatencyMs int64 `json:"ms,omitempty"`
-	Tokens    int64 `json:"tok,omitempty"`
+	// UploadMs and WriteBlockMs bracket LatencyMs: the client/tunnel leg
+	// delivering the body, and the cumulative blocking of writes back to the
+	// client. Absent on events written before 2026-08 and on requests that
+	// never passed the meter -- a reader must treat missing as "not measured",
+	// never as "instant".
+	UploadMs     int64 `json:"up_ms,omitempty"`
+	WriteBlockMs int64 `json:"wb_ms,omitempty"`
+	Tokens       int64 `json:"tok,omitempty"`
 	// CacheRead and CacheCreation record prompt-cache activity.
 	//
 	// Kept per request rather than aggregated because the question is usually
