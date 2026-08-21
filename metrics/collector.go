@@ -73,6 +73,13 @@ type Sample struct {
 	// thinking, a slow total with a fast first token is a long generation.
 	Latency time.Duration
 
+	// Upload and WriteBlock are the request's two network legs, measured by
+	// proxy.NetMeterMiddleware and recovered from the publish context --
+	// which is why they are absent (zero) on records that never passed the
+	// meter. Latency sits between them: body-in, think, body-out.
+	Upload     time.Duration
+	WriteBlock time.Duration
+
 	// Auth identifies the credential that served this request.
 	//
 	// Without it a pool of several credentials produces failures that cannot be
@@ -260,8 +267,18 @@ func NewCollector() *Collector {
 //
 // It must not block: the usage manager dispatches to plugins on its own
 // goroutine, but a slow plugin still backs up that queue.
-func (c *Collector) HandleUsage(_ context.Context, r cliproxyusage.Record) {
+func (c *Collector) HandleUsage(ctx context.Context, r cliproxyusage.Record) {
 	sample := SampleFrom(r)
+
+	// The one use this process makes of the publish context. The fork threads
+	// the request context through PublishRecord (its ResponseHeaders mechanism
+	// depends on the same fact); if a fork upgrade ever severs that, these
+	// fields silently stop appearing -- TestHandleUsageMergesNetTimings is the
+	// slimproxy-side sentinel, and the spec records the residual risk.
+	if nt := NetTimingsFrom(ctx); nt != nil {
+		sample.Upload = nt.Upload()
+		sample.WriteBlock = nt.WriteBlock()
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()

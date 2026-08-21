@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	cliproxyusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 func TestNetTimingsUploadFirstMarkWins(t *testing.T) {
@@ -41,5 +43,30 @@ func TestNetTimingsContextRoundtrip(t *testing.T) {
 	}
 	if NetTimingsFrom(context.Background()) != nil {
 		t.Fatal("empty context must yield nil")
+	}
+}
+
+func TestHandleUsageMergesNetTimings(t *testing.T) {
+	c := NewCollector()
+	var got Sample
+	c.Observe(func(s Sample) { got = s })
+
+	nt := NewNetTimings(time.Now())
+	nt.MarkBodyDone(nt.started.Add(300 * time.Millisecond))
+	nt.AddWriteBlock(40 * time.Millisecond)
+	ctx := WithNetTimings(context.Background(), nt)
+
+	c.HandleUsage(ctx, cliproxyusage.Record{Model: "m", Latency: time.Second})
+	if got.Upload != 300*time.Millisecond {
+		t.Fatalf("Upload = %v, want 300ms", got.Upload)
+	}
+	if got.WriteBlock != 40*time.Millisecond {
+		t.Fatalf("WriteBlock = %v, want 40ms", got.WriteBlock)
+	}
+
+	// 没经过中间件的请求（直连引擎测试、无 ctx 场景）安静地保持零值。
+	c.HandleUsage(context.Background(), cliproxyusage.Record{Model: "m"})
+	if got.Upload != 0 || got.WriteBlock != 0 {
+		t.Fatalf("bare ctx produced Upload=%v WriteBlock=%v, want zeros", got.Upload, got.WriteBlock)
 	}
 }
