@@ -3,7 +3,7 @@
     Generates the cloudflared config.yml for slimproxy from the template.
 
 .DESCRIPTION
-    The template has four placeholders across two settings, and a typo in any of
+    The template has three placeholders across two settings, and a typo in any of
     them fails in a way that is annoying to read: cloudflared starts, connects to
     the edge, and then every request 404s or the tunnel serves nothing at all.
     This substitutes them, then verifies the things that are checkable locally
@@ -105,7 +105,7 @@ $hostHits = ([regex]::Matches($content, 'REPLACE_WITH_HOSTNAME')).Count
 # Pin the template's shape. If someone edits the template and drops a
 # placeholder, a silently under-substituted config is the failure this catches.
 if ($idHits -ne 2)   { throw "Template should contain REPLACE_WITH_TUNNEL_ID exactly twice, found $idHits. Template edited?" }
-if ($hostHits -ne 2) { throw "Template should contain REPLACE_WITH_HOSTNAME exactly twice, found $hostHits. Template edited?" }
+if ($hostHits -ne 1) { throw "Template should contain REPLACE_WITH_HOSTNAME exactly once, found $hostHits. Template edited?" }
 
 $content = $content -replace 'REPLACE_WITH_TUNNEL_ID', $TunnelId
 $content = $content -replace 'REPLACE_WITH_HOSTNAME',  $Hostname

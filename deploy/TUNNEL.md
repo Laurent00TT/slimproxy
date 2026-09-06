@@ -102,7 +102,7 @@ replace one without `-Force`.
 
 Doing it by hand works too — copy `cloudflared-config.yml` to
 `%USERPROFILE%\.cloudflared\config.yml` and replace `REPLACE_WITH_TUNNEL_ID`
-(twice) and `REPLACE_WITH_HOSTNAME` (twice). The reason for the script is that
+(twice) and `REPLACE_WITH_HOSTNAME` (once). The reason for the script is that
 every one of those mistakes fails the same way: cloudflared starts, connects to
 the edge, reports itself healthy, and then serves 404s.
 
