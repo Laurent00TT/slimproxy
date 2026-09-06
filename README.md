@@ -155,6 +155,7 @@ Found a security issue? See [SECURITY.md](SECURITY.md).
 |---|---|
 | [docs/GUIDE.md](docs/GUIDE.md) | User guide (Chinese). From zero: when to use each command, how to read the output, what to check when something breaks. |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Architecture deep-dive (Chinese). The constraints behind each design decision, and what breaks if you change it. |
+| [docs/MIGRATION.md](docs/MIGRATION.md) | Moving to another machine (Chinese). Clone, build, re-authorise; what to carry over and what must not be. |
 | [deploy/TUNNEL.md](deploy/TUNNEL.md) | One-time Cloudflare Tunnel setup (English). Exposes the local port to the internet. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Build, test, and what a change needs to carry. |
 
