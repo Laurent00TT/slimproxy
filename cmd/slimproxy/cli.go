@@ -197,6 +197,11 @@ func dispatchLegacy(cx *cliContext, args []string) error {
 	doInit := fs.Bool("init", false, "write a ready-to-run config with generated keys, then exit")
 	initAuth := fs.String("init-auth-dir", "auths", "auth-dir to put in the generated config")
 	force := fs.Bool("force", false, "with -init, overwrite an existing config")
+	// serve's own option, accepted here because "no command means serve" is
+	// what the flag-only form promises: `slimproxy -port 9999` already reaches
+	// serve, and `slimproxy -no-tui` -- the form the guide gives service
+	// managers -- was the one serve option this dispatcher rejected.
+	noTUI := fs.Bool("no-tui", false, "with serve, no full-screen panel, logs only")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -239,7 +244,8 @@ func dispatchLegacy(cx *cliContext, args []string) error {
 	// An option the chosen command cannot use was almost certainly a mistake.
 	// The old interface accepted and ignored these; saying so costs nothing and
 	// is the difference between "my flag did nothing" and "my flag was wrong".
-	if unused := unusedLegacyOptions(fs, *doInit); len(unused) > 0 {
+	serving := !*doInit && !*routes && !*check
+	if unused := unusedLegacyOptions(fs, *doInit, serving); len(unused) > 0 {
 		fmt.Fprintf(cx.stderr, i18n.T("slimproxy: 忽略了与本次操作无关的选项: %s\n", "slimproxy: ignored options irrelevant to this operation: %s\n"), strings.Join(unused, " "))
 	}
 
@@ -263,6 +269,9 @@ func dispatchLegacy(cx *cliContext, args []string) error {
 	case *check:
 		return cmdCheck(cx, shared)
 	default:
+		if *noTUI {
+			shared = append(shared, "-no-tui")
+		}
 		return cmdServe(cx, shared)
 	}
 }
@@ -275,7 +284,7 @@ var initOnlyOptions = map[string]bool{"init-auth-dir": true, "force": true}
 // unusedLegacyOptions reports options the user set that the selected operation
 // will not read. Uses fs.Visit, which walks only the flags actually present on
 // the command line -- Lookup would report every registered flag.
-func unusedLegacyOptions(fs *flag.FlagSet, isInit bool) []string {
+func unusedLegacyOptions(fs *flag.FlagSet, isInit, isServe bool) []string {
 	var unused []string
 	fs.Visit(func(f *flag.Flag) {
 		switch {
@@ -284,6 +293,9 @@ func unusedLegacyOptions(fs *flag.FlagSet, isInit bool) []string {
 		case isInit && (f.Name == "state" || f.Name == "port"):
 			// init writes a file; it neither binds a port nor materializes an
 			// effective config into the state directory.
+			unused = append(unused, "-"+f.Name)
+		case f.Name == "no-tui" && !isServe:
+			// Only serve opens a panel; under a selector the flag does nothing.
 			unused = append(unused, "-"+f.Name)
 		}
 	})
