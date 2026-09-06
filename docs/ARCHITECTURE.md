@@ -293,6 +293,7 @@ CLIProxyAPI 的 `AuthMiddleware` 在没有注册 access provider 时对每个请
 | `pluginHost` 被无条件创建，覆盖运行期注册 | `proxy/refusal.go` | refusal 改写失效，策略拒绝变成空响应 |
 | `Service.Run` 无条件返回 `ctx.Err()` | `cmd/slimproxy/main.go` | 每次正常停止都以非零码退出 |
 | 关机截止时间在**启动时**确定而非信号时 | `cmd/slimproxy/dashboard.go` | 长跑进程得不到优雅排空 |
+| SDK 自己不启动模型目录刷新（只有上游二进制的 main 启动），且上游拉取器裸建 client 不认 `proxy-url` | `proxy/proxy.go`（Build 建 client、Run 启动）、fork 第 7-9 条补丁 | 进程终生只认编进二进制的模型目录；或刷新每 3 小时在只有代理出口的机器上静默失败 |
 
 ---
 

@@ -141,7 +141,8 @@ func tryRefreshModels(ctx context.Context, label string) {
 // fetchModelsFromRemote tries all remote URLs and returns the parsed model catalog
 // along with the URL it was fetched from. Returns (nil, "") if all fetches fail.
 func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
-	client := &http.Client{Timeout: modelsFetchTimeout}
+	// slimproxy patch: dial with the injected client (slimproxy_catalog_client.go).
+	client := catalogHTTPClient()
 	for _, url := range modelsURLs {
 		reqCtx, cancel := context.WithTimeout(ctx, modelsFetchTimeout)
 		req, err := http.NewRequestWithContext(reqCtx, "GET", url, nil)

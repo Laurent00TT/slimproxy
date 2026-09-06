@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -94,6 +95,14 @@ type Runtime struct {
 	// chain through the configured proxy or dial direct.
 	relay *outbound.Relay
 
+	// catalog is the HTTP client the model catalog refresh fetches with,
+	// built from the proxy address the engine was actually given -- the
+	// relay's when proxy-fallback-direct is on. Built in Build, started in
+	// Run: Build has to stay free of network activity (every wiring test
+	// calls it), and the refresh is a background job of the served process,
+	// not of the assembled one.
+	catalog *http.Client
+
 	// Health turns runs of failures into something said out loud. Present
 	// regardless of whether journalling is on -- see where it is constructed.
 	Health *metrics.Health
@@ -118,6 +127,11 @@ func WithoutStdoutLogs() BuildOption {
 	return func(s *buildSettings) { s.logOpts = append(s.logOpts, withoutStdout()) }
 }
 
+// startCatalogUpdater is the seam through which Run starts the model catalog
+// refresh. A var so the package's tests -- which call Run -- can replace it
+// with a recorder and stay off the network; see catalog_wiring_test.go.
+var startCatalogUpdater = cliproxy.StartModelCatalogUpdater
+
 // Run starts the service and blocks until ctx is cancelled or it stops.
 func (r *Runtime) Run(ctx context.Context) error {
 	// The guard shares this Run's lifetime and can end it.
@@ -131,6 +145,11 @@ func (r *Runtime) Run(ctx context.Context) error {
 	// The claude executor is replaced by upstream on every auth update, taking
 	// the stall guard with it -- same decay, same remedy. See stallguard.go.
 	go r.keepStallGuardInstalled(ctx, r.streamIdle)
+	// The model catalog refresh, which the SDK does not start on its own --
+	// only the upstream binary's main does. Without it the process serves the
+	// catalog compiled into the binary for its whole life, and a model
+	// released after the build is unknown to it until the next rebuild.
+	startCatalogUpdater(ctx, r.catalog)
 
 	// Start and stop go into the same timeline as the requests. Half of
 	// retrospective debugging is noticing that the thing being investigated
@@ -417,6 +436,17 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 		rt.relay = relay
 		cfg.ProxyURL = relay.URL()
 	}
+
+	// After the relay substitution, and it has to stay after it. The model
+	// catalog refresh (upstream's models.json, fetched at start and every
+	// three hours) dials with this client, built from the same cfg the
+	// engine is about to be handed -- so it follows the relay, and with it
+	// a VPN switch, exactly as the requests do. Upstream's own fetcher built
+	// a bare client that ignored proxy-url altogether; on a host whose only
+	// route out is the proxy, the refresh failed every three hours while
+	// requests flowed, and the failure is a log line nobody reads. See
+	// SLIMPROXY_PATCHES.md 第 9 条 and TestCatalogClientFollowsRelay.
+	rt.catalog = cliproxy.NewModelCatalogClient(cfg)
 
 	path, err := materialize(cfg, stateDir)
 	if err != nil {

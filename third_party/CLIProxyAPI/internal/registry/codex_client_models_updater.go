@@ -64,7 +64,8 @@ func tryRefreshCodexClientModels(ctx context.Context, label string) {
 }
 
 func fetchCodexClientModelsFromRemote(ctx context.Context) ([]byte, string) {
-	client := &http.Client{Timeout: modelsFetchTimeout}
+	// slimproxy patch: dial with the injected client (slimproxy_catalog_client.go).
+	client := catalogHTTPClient()
 	for _, sourceURL := range codexClientModelsURLs {
 		reqCtx, cancel := context.WithTimeout(ctx, modelsFetchTimeout)
 		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, sourceURL, nil)

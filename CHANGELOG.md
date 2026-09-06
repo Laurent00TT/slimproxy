@@ -25,3 +25,8 @@ First public release.
   completions (per-dialect; see README's protocol support matrix).
 - Structured event journal with bounded retention (`journal-days`).
 - Windows ACL hardening for credential and state files (`fsperm/`).
+- Model catalog refresh (upstream's `models.json`, at start and every three
+  hours) now runs in the served process — upstream's own binary starts it,
+  its SDK never did — and dials through the same `proxy-url` (or the
+  fallback relay) as the requests; upstream's fetcher ignored the proxy
+  entirely. A model released after the build no longer waits for a rebuild.
