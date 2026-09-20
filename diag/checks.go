@@ -27,6 +27,34 @@ import (
 // QUIC, and the proxy intermittently could not reach api.anthropic.com.
 var fakeIPNet = &net.IPNet{IP: net.IPv4(198, 18, 0, 0), Mask: net.CIDRMask(15, 32)}
 
+// edgeHostSuffix is the part every edge hostname shares.
+const edgeHostSuffix = ".v2.argotunnel.com"
+
+// tunnelEdgeHosts are the names cloudflared resolves to find the Cloudflare
+// edge. They are fixed, not derived from the tunnel's own hostname, which is
+// what makes them answerable before anything has been started.
+var tunnelEdgeHosts = []string{"region1" + edgeHostSuffix, "region2" + edgeHostSuffix}
+
+// edgeLabel names one edge host inside a report line.
+//
+// Short, because the panel truncates every line to its width (see tui/view.go's
+// result panel): two 25-cell hostnames push the addresses past the right edge,
+// and an operator told "the edge is in reserved space" with no address on screen
+// has been handed a conclusion and shown none of it. Nothing is lost by
+// dropping the suffix -- the remedy names *.argotunnel.com, which is the string
+// that goes into the proxy rules.
+func edgeLabel(host string) string { return strings.TrimSuffix(host, edgeHostSuffix) }
+
+// lookupIPv4 is the one place this package asks DNS a question.
+//
+// A variable so the DNS checks can be exercised without a live resolver. A test
+// that called the real one would be grading the developer's network rather than
+// the code, and would pass or fail depending on whether their own machine is
+// running a fake-ip proxy -- which is the exact condition under test.
+var lookupIPv4 = func(ctx context.Context, host string) ([]net.IP, error) {
+	return (&net.Resolver{}).LookupIP(ctx, "ip4", host)
+}
+
 // Target describes what to inspect. It mirrors the parts of the slimproxy
 // config the checks need, so this package does not depend on the proxy package.
 type Target struct {
@@ -114,6 +142,7 @@ func Checks(t Target) []Check {
 		{Name: "config-fields", Timeout: 4 * time.Second, Run: t.checkConfigFields},
 		{Name: "upstream-dns", Timeout: 6 * time.Second, Run: t.checkUpstreamDNS},
 		{Name: "upstream-reach", Timeout: 8 * time.Second, Run: t.checkUpstreamReach},
+		{Name: "tunnel-edge-dns", Timeout: 6 * time.Second, Run: t.checkTunnelEdgeDNS},
 		{Name: "tunnel", Timeout: 15 * time.Second, Run: t.checkTunnel},
 	}
 	if t.FromRunningInstance {
@@ -438,7 +467,7 @@ func (t Target) checkConfigFields(ctx context.Context) Result {
 // checkUpstreamDNS looks for DNS interception on the upstream endpoint.
 func (t Target) checkUpstreamDNS(ctx context.Context) Result {
 	const host = "api.anthropic.com"
-	ips, err := (&net.Resolver{}).LookupIP(ctx, "ip4", host)
+	ips, err := lookupIPv4(ctx, host)
 	if err != nil {
 		return Result{
 			Level:  Unknown,
@@ -496,6 +525,147 @@ func (t Target) checkUpstreamReach(ctx context.Context) Result {
 	}
 	_ = conn.Close()
 	return Result{Level: Pass, Detail: fmt.Sprintf(i18n.T("%s TCP 可连接（未验证 TLS）", "%s accepts TCP (TLS not verified)"), addr)}
+}
+
+// checkTunnelEdgeDNS catches fake-ip interception of the Cloudflare edge before
+// anything tries to start the tunnel.
+//
+// The outage this exists for: region1/region2.v2.argotunnel.com resolved to
+// 198.18.0.11 and 198.18.0.12, no proxy rule matched argotunnel.com, and the
+// traffic fell through to a relay that carried QUIC's first stateless round
+// trip but not the rest of the handshake. cloudflared retried forever instead
+// of exiting, the startup grace killed it, and all the operator saw was
+// "启动隧道失败" over a width-truncated log tail. upstream-dns stayed green the
+// whole time: it only ever asks about api.anthropic.com, which was resolving
+// perfectly well.
+//
+// Checking this by hand on such a machine does not work. A TUN in fake-ip mode
+// takes over port 53 outright, so nslookup returns the synthetic address no
+// matter which resolver is named -- on the day of the outage 1.1.1.1, 8.8.8.8
+// and an address running no resolver at all each answered 198.18.0.11. The
+// answer the Go resolver gets here is the answer cloudflared will get.
+func (t Target) checkTunnelEdgeDNS(ctx context.Context) Result {
+	// Relevance is decided the way checkTunnel decides it, so the two can never
+	// disagree about whether a tunnel exists. A config that exists but cannot be
+	// read leaves that question open, and an open question is not a pass.
+	if t.TunnelErr != nil {
+		return Result{
+			Level: Unknown,
+			Detail: fmt.Sprintf(i18n.T("存在 cloudflared 配置但无法理解，无从判断是否需要检查边缘地址: %v",
+				"a cloudflared config exists but could not be understood; whether the edge matters here is undetermined: %v"), t.TunnelErr),
+			Remedy: i18n.T("先修好 ~/.cloudflared/config.yml（见 tunnel 一项）再重跑", "fix ~/.cloudflared/config.yml first (see the tunnel item), then run this again"),
+			Err:    t.TunnelErr,
+		}
+	}
+	if t.TunnelName == "" {
+		// No tunnel, no edge to reach. A finding about Cloudflare's edge on a
+		// machine that never talks to it is noise, and noise is what gets the
+		// rest of the report skimmed.
+		return Result{Level: Pass, Detail: i18n.T("未配置隧道（跳过）", "no tunnel configured (skipped)")}
+	}
+
+	var fake, resolved, unresolved []string
+	for _, host := range tunnelEdgeHosts {
+		ips, err := lookupIPv4(ctx, host)
+		if err != nil {
+			if ctx.Err() != nil {
+				// A lookup that ended because the deadline did says nothing
+				// about DNS, and neither would the next one. Recording this
+				// host as "does not resolve" would be a finding about the
+				// clock, so the loop stops and the conclusion below rests on
+				// whatever was observed before time ran out.
+				break
+			}
+			// Not resolving and resolving to a synthetic address are different
+			// findings with different fixes. Collapsing them would send the
+			// operator into the proxy rules over a plain DNS outage, or the
+			// reverse -- and the reverse is the expensive direction.
+			unresolved = append(unresolved, edgeLabel(host))
+			continue
+		}
+		var hit string
+		for _, ip := range ips {
+			if fakeIPNet.Contains(ip) {
+				hit = ip.String()
+				break
+			}
+		}
+		switch {
+		case hit != "":
+			fake = append(fake, edgeLabel(host)+" → "+hit)
+		case len(ips) > 0:
+			// "resolved", not "reachable": nothing here dialled the address.
+			resolved = append(resolved, edgeLabel(host)+" → "+ips[0].String())
+		default:
+			// An empty answer with no error is neither a real address nor a fake
+			// one. Counting it as real would report an address never seen.
+			unresolved = append(unresolved, edgeLabel(host))
+		}
+	}
+
+	if len(fake) > 0 {
+		// Warn rather than Fail, for the same reason checkTunnel reports its own
+		// fake-ip branch as Warn: what was observed is interception, not
+		// failure. Some relays do carry the handshake, and the check that gets
+		// to call the tunnel broken is the one that looked at the tunnel.
+		return Result{
+			Level: Warn,
+			Detail: fmt.Sprintf(i18n.T("边缘地址落在 RFC 2544 保留段 198.18.0.0/15: %s",
+				"edge is in RFC 2544 space 198.18.0.0/15: %s"), strings.Join(fake, ", ")),
+			// The action first, then why both halves are needed, then where to
+			// read more: the panel truncates this line to its width, so what
+			// the operator has to do must arrive before the cut, and the doc
+			// pointer -- the one part still findable without this line -- is
+			// what gets sacrificed to it. The cause is already on the detail
+			// line above; restating it here would spend the readable width
+			// saying nothing new. The direct rule alone is the trap: fake-ip
+			// answers first, so the rule is matched against 198.18.x.x and
+			// never fires.
+			Remedy: i18n.T(
+				"让 *.argotunnel.com 直连，并加入 fake-ip 排除列表；只加直连规则永远匹配不上，见 deploy/TUNNEL.md",
+				"route *.argotunnel.com direct AND exempt it from fake-ip; a direct rule alone never matches, see deploy/TUNNEL.md"),
+		}
+	}
+
+	if len(resolved) > 0 {
+		// cloudflared registers against whichever region answers, so one region
+		// missing is not the condition this check exists for. Promoting it to
+		// Unknown would make doctor exit non-zero on a tunnel that comes up
+		// fine. A real answer is also a real observation: fake-ip answers every
+		// name under the domain, so seeing one genuine edge address rules the
+		// interception out even when the run was cut short afterwards.
+		detail := fmt.Sprintf(i18n.T("边缘地址真实: %s", "real edge addresses: %s"), strings.Join(resolved, ", "))
+		if len(unresolved) > 0 {
+			detail += fmt.Sprintf(i18n.T("（%s 未解析，用能解析的区域即可）",
+				" (%s did not resolve; whichever region answers is enough)"), strings.Join(unresolved, ", "))
+		}
+		return Result{Level: Pass, Detail: detail}
+	}
+
+	// Nothing genuine and nothing synthetic was seen. A context that died first
+	// explains that emptiness, and it is the only explanation this check is
+	// entitled to give -- "DNS is broken" is a conclusion it did not reach.
+	if ctx.Err() != nil {
+		return Result{
+			Level:  Unknown,
+			Detail: i18n.T("检查被取消或超时，边缘地址的解析结果未知", "the check was canceled or timed out; the edge resolution is undetermined"),
+			Remedy: i18n.T("重新运行", "run it again"),
+			Err:    ctx.Err(),
+		}
+	}
+
+	return Result{
+		Level: Unknown,
+		Detail: fmt.Sprintf(i18n.T("边缘地址无法解析（%s），无从判断是否被劫持",
+			"the edge addresses do not resolve (%s); whether they are intercepted cannot be judged"), strings.Join(unresolved, ", ")),
+		// Not resolving is not the same as not being hijacked, which is why this
+		// is Unknown and not Pass. The nslookup half is here because it is the
+		// first thing anyone reaches for and the one thing that cannot work: a
+		// fake-ip TUN owns port 53, so naming a public resolver changes nothing.
+		Remedy: i18n.T(
+			"先修 DNS；这种机器上 nslookup 复核没有意义，fake-ip 的 TUN 接管了 53 端口",
+			"fix DNS first; nslookup proves nothing on such a machine -- a fake-ip TUN owns port 53"),
+	}
 }
 
 // checkTunnel reports the three states a tunnel can be in, which a single
