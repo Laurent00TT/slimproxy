@@ -16,15 +16,28 @@ credentials-file: C:\Users\<you>\.cloudflared\REPLACE_WITH_TUNNEL_ID.json
 # Transport to the Cloudflare edge. Left to cloudflared by default, which picks
 # QUIC (UDP 7844) and is the better choice when UDP works.
 #
-# Uncomment this when UDP to the edge does not work. The usual cause on a
-# desktop is a local proxy / VPN in fake-ip mode: it answers the DNS query for
-# region1.v2.argotunnel.com with a 198.18.x.x address and then forwards TCP but
-# not UDP, so QUIC times out forever while TCP succeeds. cloudflared's own
-# startup pre-check prints exactly this -- UDP FAIL, TCP PASS -- so read it
-# before guessing.
+# Uncomment this to confirm ONE diagnosis: UDP to the edge is blocked while TCP
+# 7844 still works end to end. The usual cause on a desktop is a local proxy /
+# VPN in fake-ip mode: it answers the DNS query for region1.v2.argotunnel.com
+# with a 198.18.x.x address and then forwards TCP but not UDP, so QUIC times out
+# forever while HTTP/2 succeeds. cloudflared's startup pre-check prints that
+# shape as UDP FAIL / TCP PASS.
 #
-# The better fix is to make the proxy route *.argotunnel.com direct, then leave
-# this commented out and get QUIC back.
+# It is NOT a general fallback. The same fake-ip setup can break both legs: on
+# 2026-09-20 TCP 7844 completed a TLS handshake and presented the genuine
+# *.cftunnel.com certificate, but ALPN never negotiated h2 and one HTTP/2
+# preface frame failed 6/6 -- while the UDP pre-check reported PASS in the same
+# second as a failed dial. Switching to http2 there only moves the tunnel onto
+# the leg that is definitely dead.
+#
+# So the check that discriminates is the ip= field in the log, not the pre-check
+# table: 198.18.x.x means the proxy is on the path. `slimproxy doctor` reports
+# that without reading the log at all.
+#
+# Either way the fix is both halves -- route *.argotunnel.com direct AND exempt
+# it from fake-ip -- because a direct rule alone still receives the 198.18.x.x
+# answer and so never matches. TUNNEL.md, "If it never connects". Then leave
+# this commented out and keep QUIC.
 # protocol: http2
 
 # Keep the connection warm and fail fast on a dead edge.

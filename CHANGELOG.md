@@ -21,6 +21,19 @@ First public release.
   on a terminal.
 - Cloudflare Tunnel lifecycle management (`tunnel up/down/status`) with
   identity-checked process control and connection-count verification.
+- A tunnel that fails to start now names the reason instead of dumping log.
+  `tunnel up` printed one templated sentence and twelve raw lines of
+  cloudflared's output, each truncated to panel width — which on 2026-09-20 cut
+  away the `ip=198.18.0.12` field that was the entire answer. The startup path
+  now classifies the region of the log this launch wrote: an edge address inside
+  198.18.0.0/15 (a local proxy answering `*.argotunnel.com` DNS in fake-ip
+  mode), a failing cloudflared pre-check named by component, a collapsed edge
+  address pool, or a child still retrying rather than dead. When nothing
+  matches, nothing is claimed and the log tail remains the fallback — a
+  confident wrong diagnosis costs more than a raw dump. `doctor` gains
+  `tunnel-edge-dns`, which reports the same condition before anything tries to
+  start; the existing `upstream-dns` check only ever looked at
+  `api.anthropic.com` and stayed silent through the whole incident.
 - Upstream policy refusals surfaced instead of silently translated into empty
   completions (per-dialect; see README's protocol support matrix).
 - Structured event journal with bounded retention (`journal-days`).

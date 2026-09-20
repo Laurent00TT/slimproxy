@@ -134,35 +134,103 @@ cloudflared service install
 
 ### If it never connects
 
-cloudflared prints a CONNECTIVITY PRE-CHECKS table at startup. Read it before
-theorising — it usually contains the whole answer:
+Run `slimproxy doctor` first. Its `tunnel-edge-dns` check resolves
+`region1/region2.v2.argotunnel.com` through the same resolver cloudflared will
+use, reports a `198.18.x.x` answer as a finding, and prints both halves of the
+fix as its remedy — all before anything tries to start the tunnel. Reading it
+out of the log by hand works too, and the section below is how: it is the
+reasoning behind that one finding, and the path to follow when cloudflared is
+being run on its own.
+
+The question the check asks, and the one to ask by hand otherwise, separates "a
+local proxy is on the path" from every other cause, and it holds whatever the
+failure looks like afterwards: **is the `ip=` field in cloudflared's log a
+`198.18.x.x` address?**
+
+```
+INF Tunnel connection curve preferences: [...] connIndex=0 event=0 ip=198.18.0.11
+ERR Failed to dial a quic connection error="..." connIndex=0 event=0 ip=198.18.0.12
+```
+
+`198.18.0.0/15` is RFC 2544 benchmark space, reserved for router throughput
+tests and never routed to a real destination, so a Cloudflare edge address is
+never in it. Seeing it means the DNS answer for `region1.v2.argotunnel.com`
+came from a local proxy or VPN in fake-ip mode: the address is a handle the TUN
+stack hands back to itself, and whatever cloudflared sends to it is relayed
+through whichever outbound node the proxy's rules select. If the field holds a
+real address, the proxy is not on the path and nothing else in this section
+applies.
+
+cloudflared also prints a CONNECTIVITY PRE-CHECKS table at startup. Read it,
+but read it as a hint and not as a verdict — it has been wrong here in both
+directions. Two shapes of this failure occur, and they do not call for the same
+thing.
+
+**Shape A — UDP fails, TCP works.**
 
 ```
 UDP Connectivity  region1.v2.argotunnel.com  FAIL  QUIC connection failed
 TCP Connectivity  region1.v2.argotunnel.com  PASS  HTTP/2 connection successful
 ```
 
-UDP failing while TCP passes means the QUIC transport cannot reach the edge, and
-cloudflared will retry it forever with backoff rather than falling back. On a
-desktop the usual cause is a local proxy or VPN in fake-ip mode: check whether
-the `ip=` field in the log lines is a `198.18.x.x` address. That range is RFC
-2544 benchmark space, so a real Cloudflare edge is never in it — seeing it means
-DNS was answered by the proxy, which then forwards TCP but not UDP.
+The proxy forwards TCP but not UDP. QUIC then times out forever — cloudflared
+retries it with backoff rather than falling back on its own — while HTTP/2 to
+the same host genuinely works.
 
-**Pinning `-Protocol http2` is not the fix, and it hides the real problem.**
-Measured on one such setup: HTTP/2 through the proxy connected immediately and
-then logged 14 connection registrations against 15 drops — roughly one drop
-every few minutes, each one a window where the hostname returns 502. Health
-checks pass between drops, so a single curl reports success and the tunnel looks
-fine. Use it only to confirm the diagnosis, never as the end state.
+**Shape B — neither transport works.** Measured 2026-09-20:
 
-The fix is to keep the tunnel's control connection off the proxy entirely. Two
-ways, depending on what the proxy client exposes:
+```
+INF precheck component="UDP Connectivity" details="QUIC connection successful" status=pass target=region1.v2.argotunnel.com
+INF precheck component="TCP Connectivity" details="HTTP/2 connection is blocked or unreachable" status=fail target=region1.v2.argotunnel.com
+ERR Failed to dial a quic connection error="failed to dial to edge with quic: timeout: no recent network activity" connIndex=0 event=0 ip=198.18.0.12
+```
+
+No rule matched `argotunnel.com`, so the traffic fell through to `MATCH` and
+left through whichever node happened to be selected — here a VLESS relay whose
+UDP forwarding carried QUIC's first stateless round-trip but not the
+multi-packet handshake. That is why the UDP probe passed while every real dial
+still timed out. TCP 7844 was no better, and the way it failed is worth
+spelling out: the connection completed a TLS handshake and the peer presented
+the genuine `*.cftunnel.com` certificate, but ALPN never negotiated `h2`, and
+writing a single HTTP/2 preface frame failed 6 times out of 6. Both legs reach
+*something*; neither reaches Cloudflare. cloudflared does not exit on that — it
+retries indefinitely — so the only symptom that surfaces is a supervisor giving
+up: slimproxy kills it once the 15s startup grace expires and reports that the
+tunnel failed to start.
+
+**The pre-check is not a verdict.** In the run above, at `02:46:13Z` the table
+reported UDP PASS with `details="QUIC connection successful"` and
+`suggested_protocol=quic`, and in that same second cloudflared logged a failed
+dial to `198.18.0.12`. A probe that completes one round-trip against a fake IP
+shows that the TUN stack answered, nothing more. When the table and the
+`Failed to dial` lines disagree, the dial lines are the ones telling the truth.
+
+**Pinning `-Protocol http2` is a confirmation tool for shape A, not a fix and
+not a general fallback.** In shape A it connects immediately, which confirms
+the reading — and it is then measurably worse than working QUIC. Measured on
+one such setup: 14 registration events against 15 drops, roughly one drop every
+few minutes, each one a window where the hostname returns 502. Health checks
+pass between drops, so a single curl reports success and the tunnel looks fine.
+In shape B it buys nothing at all, because TCP 7844 is the leg that is already
+dead — switching to it moves the tunnel onto the transport you have just
+watched fail 6 times out of 6. Either way it is a probe, never the end state.
+
+The fix, for both shapes, is to keep the tunnel's control connection off the
+proxy entirely. Two ways, depending on what the proxy client exposes:
 
 1. **If it accepts custom rules** (most Clash/mihomo-based clients do): route
    `DOMAIN-SUFFIX,argotunnel.com` to DIRECT, and add `+.argotunnel.com` to
    `fake-ip-filter` so DNS returns the real address. Both are needed — a direct
    rule alone still receives a `198.18.x.x` answer and never matches.
+
+   Clash Verge Rev adds a trap of its own. An extend file takes effect only if
+   the active profile lists it under `option:` in `profiles.yaml`; a "rules"
+   extend file that is not listed there is written, accepted, and silently
+   ignored, which leaves you reading a rule on disk that the running config has
+   never seen. Put the two lines in whichever merge or script extend is already
+   bound to the profile. That placement also survives the subscription refresh,
+   which rewrites `profiles/<uid>.yaml` wholesale and discards anything edited
+   into it directly.
 
 2. **If it does not** (locked-down or vendor-customised clients): bypass at the
    OS level instead. Put the real edge addresses in `hosts`:
@@ -184,14 +252,59 @@ ways, depending on what the proxy client exposes:
    Confirm with `Find-NetRoute -RemoteIPAddress 198.41.192.27` — the chosen
    interface must be the physical adapter, not the tunnel.
 
-After either fix the pre-check should report UDP PASS, the log's `ip=` fields
-should hold real addresses rather than `198.18.x.x`, and `location=` usually
-changes to the genuine anycast landing point. Then drop `-Protocol` and let it
-use QUIC again. Same setup after the fix: 2 registrations, **0 drops**.
+Two obvious ways of checking your work will lie to you while fake-ip is in
+play. Both were confirmed on this setup:
 
-The same fake-ip behaviour also makes `nslookup` useless for verifying DNS
-records — A lookups return the proxy's synthetic address regardless of what
-Cloudflare actually holds. Query DoH directly instead:
+- **`Test-NetConnection` succeeds against an address that goes nowhere.** The
+  TUN client's gVisor stack completes the local TCP handshake itself and only
+  then tries to reach upstream, so
+  `Test-NetConnection region1.v2.argotunnel.com -Port 7844` reports
+  `TcpTestSucceeded : True` for any address in the fake-ip pool. A completed
+  three-way handshake is not evidence of a path.
+- **`nslookup` returns the synthetic address even when you name a public
+  resolver.** The TUN hijacks port 53, so `nslookup region1.v2.argotunnel.com
+  1.1.1.1` is answered locally and still says `198.18.x.x`. DoH rides HTTPS and
+  is therefore subject to the routing rules rather than to the DNS
+  interception, which makes it the one way to see the real answer from this
+  machine:
+
+  ```
+  curl -s -H "accept: application/dns-json" "https://cloudflare-dns.com/dns-query?name=region1.v2.argotunnel.com&type=A"
+  ```
+
+  What makes that answer real is that it is *outside* `198.18.0.0/15`; that is
+  the whole test. The addresses seen from here landed in `198.41.192.0/20` and
+  `198.41.200.0/20`, which is what the `hosts` and `route` lines above pin, but
+  Cloudflare answers from whatever it likes — an address outside those two is
+  not by itself wrong.
+
+A fixed tunnel is recognisable without guessing, which matters because a
+partial fix resembles a working one closely enough to be mistaken for it. All
+four of these hold on a healthy run:
+
+- The `ip=` fields hold addresses outside `198.18.0.0/15` (here
+  `198.41.192.x` / `198.41.200.x`) and `location=` names a real anycast colo —
+  here `lax01` and `lax05`; yours depends on where you are, so read it as "a
+  colo at all", not as those two codes.
+- All four `connIndex` values, 0 through 3, register.
+- Zero `Failed to dial` lines.
+- No `You requested 4 HA connections but I can give you at most 2` line. It
+  reads like an account limit and is not one: it was there on the intercepted
+  run above and gone on the healthy one, and the two it offers is the number of
+  distinct fake-ip addresses handed back — one per `regionN.v2.argotunnel.com`
+  name. Seeing it after a fix means DNS is still being answered locally.
+
+Then drop `-Protocol` and let it use QUIC again. On the shape-A setup measured
+above the churn stopped dead once its traffic left the proxy: **0 drops**,
+against 15 before. Its registration count over that window was 2, not the four
+`connIndex` the list above expects — a different run, and nothing measured here
+explains the gap, so take the drop count as the result and the list as what to
+check.
+
+One more place the same fake-ip behaviour bites, this time when verifying the
+DNS record rather than connectivity: `nslookup` is equally useless for checking
+what Cloudflare holds for your hostname, since A lookups return the proxy's
+synthetic address regardless. Query DoH directly here too:
 
 ```
 curl -s -H "accept: application/dns-json" "https://cloudflare-dns.com/dns-query?name=proxy.example.com&type=A"
