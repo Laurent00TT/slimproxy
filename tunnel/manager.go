@@ -464,8 +464,18 @@ const connectedMarker = "Registered tunnel connection"
 // Three outcomes, each reported differently: the process died (its log says
 // why), it is alive but never connected (also in the log, usually a repeating
 // retry), or a connection was registered.
+//
+// Both failure paths go through startupFailure, which names the cause whenever
+// the log evidences one. "Here are twelve lines of cloudflared output, work it
+// out" is what this function used to return, and it is the difference between
+// an operator reading a fake-ip edge address and spending an afternoon on it.
 func (m *Manager) confirmStarted(ctx context.Context, rec record, logStart int64) error {
 	deadline := time.Now().Add(startupGrace)
+	// Whether the last check actually saw our process. Only identityMatch
+	// counts: identityUnknown means the query itself failed, and "it never
+	// exited, it kept retrying" would then be a statement about a process
+	// nobody managed to look at. Not-gone is not the same as observed-alive.
+	confirmedAlive := false
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -473,17 +483,93 @@ func (m *Manager) confirmStarted(ctx context.Context, rec record, logStart int64
 		case <-time.After(300 * time.Millisecond):
 		}
 
-		if id, _ := m.identityOf(rec); id == identityGone || id == identityMismatch {
-			return fmt.Errorf(i18n.T("cloudflared 启动后随即退出：\n%s", "cloudflared exited immediately after starting:\n%s"), logTail(rec.LogPath, 12))
+		id, _ := m.identityOf(rec)
+		if id == identityGone || id == identityMismatch {
+			return startupFailure(i18n.T(
+				"cloudflared 启动后随即退出",
+				"cloudflared exited immediately after starting"), rec.LogPath, logStart, false)
 		}
+		confirmedAlive = id == identityMatch
 		if logContains(rec.LogPath, connectedMarker, logStart) {
 			return nil
 		}
 	}
-	return fmt.Errorf(i18n.T(
-		"cloudflared 在 %s 内未能建立到 Cloudflare 的连接；进程仍在运行并重试，但隧道尚未可用：\n%s",
-		"cloudflared failed to establish a Cloudflare connection within %s; the process is still running and retrying, but the tunnel is not yet usable:\n%s"),
-		startupGrace, logTail(rec.LogPath, 12))
+
+	return startupFailure(startupTimeoutHeadline(confirmedAlive), rec.LogPath, logStart, confirmedAlive)
+}
+
+// startupTimeoutHeadline is the first line for a launch that ran out of grace.
+//
+// Not phrased in the present tense ("the process is still running"): the caller
+// kills the child as soon as confirmStarted returns, so by the time an operator
+// reads the message that claim is already false. What stays true is what was
+// observed inside the window -- and when the liveness query never answered,
+// what was observed is only that no connection registered.
+func startupTimeoutHeadline(confirmedAlive bool) string {
+	if !confirmedAlive {
+		return fmt.Sprintf(i18n.T(
+			"cloudflared 在 %s 内未能建立到 Cloudflare 的连接（进程状态无法确认）",
+			"cloudflared did not establish a Cloudflare connection within %s (its process state could not be confirmed)"),
+			startupGrace)
+	}
+	return fmt.Sprintf(i18n.T(
+		"cloudflared 在 %s 内未能建立到 Cloudflare 的连接：它没有退出，而是一直在重试",
+		"cloudflared did not establish a Cloudflare connection within %s: it never exited, it kept retrying"),
+		startupGrace)
+}
+
+// startupFailure builds the message for a launch that did not connect: the
+// named cause first, then what to do, then the log tail as evidence.
+//
+// Order is the whole point. The TUI renders this into a panel that truncates
+// every line to the panel width and shows a bounded number of rows (see
+// tui/view.go), so a twelve-line dump of timestamped cloudflared output is a
+// dump with the decisive field cut off the right-hand edge. The tail stays
+// because it is the raw evidence for the line above it -- and because when
+// nothing classifies, it is still the only thing there is.
+//
+// alive is passed through to the classifier, which needs it to tell "still
+// retrying" from "already dead".
+func startupFailure(headline, logPath string, offset int64, alive bool) error {
+	lines := []string{headline}
+	if d := classifyStartupLog(readLogFrom(logPath, offset), alive); d.known() {
+		lines = append(lines, d.Lines...)
+	}
+	lines = append(lines, i18n.T("日志末尾：", "log tail:"), logTail(logPath, offset, 12))
+	return errors.New(strings.Join(lines, "\n"))
+}
+
+// startupLogScan caps how much of this launch's output is classified.
+//
+// One launch writes a few dozen lines inside the startup grace, so the cap is
+// never reached in practice; it exists because the log is append-only and
+// shared with every previous run, and an unbounded read of a file that grows
+// forever is a bug waiting for the one machine where cloudflared loops on a
+// chatty error.
+const startupLogScan = 256 * 1024
+
+// readLogFrom returns what this launch wrote, from offset onwards.
+//
+// The same region confirmStarted's success check scans, and for the same
+// reason: the file is append-only, so a previous run's pre-check rows and dial
+// failures are still in it, and classifying those would diagnose the last
+// launch instead of this one. An unreadable log yields "", which classifies as
+// nothing and leaves the caller with the tail alone.
+func readLogFrom(path string, offset int64) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return ""
+	}
+	body, err := io.ReadAll(io.LimitReader(f, startupLogScan))
+	if err != nil {
+		return ""
+	}
+	return string(body)
 }
 
 // logContains reports whether the log holds a marker past offset.
@@ -521,14 +607,36 @@ func logContains(path, marker string, offset int64) bool {
 	return false
 }
 
-// logTail returns the last n lines of a log file, for reporting a failure whose
-// only explanation is in there.
-func logTail(path string, n int) string {
+// logTail returns the last n lines this launch wrote, for reporting a failure
+// whose only explanation is in there.
+//
+// Bounded to offset for the same reason classifyStartupLog is. The log is
+// append-only and shared with every previous run, so a launch that died after
+// three lines used to have its tail padded out with nine lines from an earlier
+// one -- on the exit path, often a "Registered tunnel connection" that flatly
+// contradicts the headline above it. Evidence from a run that is over is not
+// evidence about this one, and the tail is printed as evidence.
+//
+// offset outside the file means it shrank underneath us (rotated, or replaced);
+// there is then no earlier run left to confuse this one with, so the whole file
+// is the tail.
+func logTail(path string, offset int64, n int) string {
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Sprintf(i18n.T("（无法读取日志 %s: %v）", "(cannot read log %s: %v)"), path, err)
 	}
-	lines := strings.Split(strings.TrimRight(string(body), "\r\n"), "\n")
+	if offset > 0 && offset <= int64(len(body)) {
+		body = body[offset:]
+	}
+	text := strings.TrimRight(string(body), "\r\n")
+	if text == "" {
+		// Stated rather than left as an empty block: that cloudflared wrote
+		// nothing at all is the finding. It never reached the point of
+		// logging, which points at the binary or its arguments, not the
+		// network -- and an empty block reads as a rendering bug instead.
+		return "  " + i18n.T("（本次启动没有写入任何日志）", "(this launch wrote nothing to the log)")
+	}
+	lines := strings.Split(text, "\n")
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
