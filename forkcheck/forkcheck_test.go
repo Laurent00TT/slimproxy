@@ -167,7 +167,12 @@ func TestForkClaudeExtrasGuard(t *testing.T) {
 // body -- with nothing in slimproxy's journal beyond a cause enum to say so.
 // The not-retried test pins the other side of the boundary: an error after
 // the request was written must never be retried, since that can bill it
-// twice. Every test was mutation-checked red against the bug it names.
+// twice -- its subtests cover a reset stream and a path that dies under the
+// request, and run with it. Two more pin what the patch must not do to a
+// connection once it is up: cut a long response at the setup bound, or keep
+// the connection a request leaves behind open for good (the PING health check
+// would otherwise keep it alive through Clash and the node). Every test was
+// mutation-checked red against the bug it names.
 func TestForkUtlsSetupGuard(t *testing.T) {
 	runForkGuard(t, "fork 的 utls 建连守卫（建连的限时/重试补丁可能被升级冲掉了，死节点会重新让请求 5s EOF 或挂 60s）",
 		[]string{"./internal/runtime/executor/helps/"},
@@ -179,6 +184,8 @@ func TestForkUtlsSetupGuard(t *testing.T) {
 			"TestUtlsRequestErrorAfterSetupIsNotRetried",
 			"TestUtlsSetupWaitersFollowTheirOwnContext",
 			"TestUtlsConnectionDetectsSilentDeathMidResponse",
+			"TestUtlsAttemptBoundDoesNotCapTheResponse",
+			"TestUtlsIdleConnectionIsClosed",
 		})
 }
 

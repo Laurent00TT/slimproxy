@@ -5,7 +5,9 @@ package helps
 // What is being pinned: the utls round tripper bounds each connection-setup
 // attempt, retries a failed setup a fixed number of times, stops the moment
 // the request's own context ends, and never retries once the request has been
-// handed to a live connection. The failures are staged by a fake HTTP CONNECT
+// handed to a live connection; and, once a connection is up, that nothing of
+// setup's bound is left on it, that a dead one is noticed, and that an idle
+// one is closed. The failures are staged by a fake HTTP CONNECT
 // proxy on loopback -- the same shapes Clash produced in the 2026-09-21..23
 // window: a CONNECT answered 200 and then closed (the ~5.0s EOF inside the
 // handshake), a tunnel that swallows the ClientHello (the ~60s hang), a
@@ -43,6 +45,17 @@ func setSetupTimings(t *testing.T, attempts int, attemptTimeout time.Duration, b
 	connectAttempts, connectAttemptTimeout, connectRetryBackoff = attempts, attemptTimeout, backoff
 	t.Cleanup(func() {
 		connectAttempts, connectAttemptTimeout, connectRetryBackoff = oldAttempts, oldTimeout, oldBackoff
+	})
+}
+
+// setH2Timings shrinks the HTTP/2 health-check and idle timings for one test
+// and restores them after.
+func setH2Timings(t *testing.T, readIdle, ping, idleConn time.Duration) {
+	t.Helper()
+	oldIdle, oldPing, oldConn := h2ReadIdleTimeout, h2PingTimeout, h2IdleConnTimeout
+	h2ReadIdleTimeout, h2PingTimeout, h2IdleConnTimeout = readIdle, ping, idleConn
+	t.Cleanup(func() {
+		h2ReadIdleTimeout, h2PingTimeout, h2IdleConnTimeout = oldIdle, oldPing, oldConn
 	})
 }
 
@@ -209,8 +222,11 @@ func closeAfterConnect(_ *connectProxy, _ int, c net.Conn, br *bufio.Reader) {
 
 // tunnel answers 200 and relays to target. While frozen is set, bytes in
 // either direction are dropped and nothing is closed -- a path that died
-// without a FIN or RST reaching either end.
-func (p *connectProxy) tunnel(c net.Conn, br *bufio.Reader, target string, frozen *atomic.Bool) {
+// without a FIN or RST reaching either end. clientGone, if set, is called
+// when the client ends its side first (FIN or RST): a read cut because the
+// proxy itself closed the connection, after the upstream side ended, does
+// not count.
+func (p *connectProxy) tunnel(c net.Conn, br *bufio.Reader, target string, frozen *atomic.Bool, clientGone func()) {
 	if !readConnect(br) {
 		return
 	}
@@ -223,7 +239,7 @@ func (p *connectProxy) tunnel(c net.Conn, br *bufio.Reader, target string, froze
 	if !answerConnect(c) {
 		return
 	}
-	relay := func(dst net.Conn, src io.Reader) {
+	relay := func(dst net.Conn, src io.Reader, srcGone func()) {
 		buf := make([]byte, 32<<10)
 		for {
 			n, errRead := src.Read(buf)
@@ -233,6 +249,9 @@ func (p *connectProxy) tunnel(c net.Conn, br *bufio.Reader, target string, froze
 				}
 			}
 			if errRead != nil {
+				if srcGone != nil && !errors.Is(errRead, net.ErrClosed) {
+					srcGone()
+				}
 				if frozen == nil || !frozen.Load() {
 					_ = dst.Close()
 				}
@@ -240,13 +259,13 @@ func (p *connectProxy) tunnel(c net.Conn, br *bufio.Reader, target string, froze
 			}
 		}
 	}
-	go relay(up, br)
-	relay(c, up)
+	go relay(up, br, clientGone)
+	relay(c, up, nil)
 }
 
 func tunnelTo(target string, frozen *atomic.Bool) func(p *connectProxy, n int, c net.Conn, br *bufio.Reader) {
 	return func(p *connectProxy, _ int, c net.Conn, br *bufio.Reader) {
-		p.tunnel(c, br, target, frozen)
+		p.tunnel(c, br, target, frozen, nil)
 	}
 }
 
@@ -409,7 +428,7 @@ func TestUtlsSetupRetriesAfterHandshakeEOF(t *testing.T) {
 			closeAfterConnect(p, n, c, br)
 			return
 		}
-		p.tunnel(c, br, upstream, nil)
+		p.tunnel(c, br, upstream, nil, nil)
 	})
 	rt := newTestRoundTripper(t, p, roots)
 
@@ -526,33 +545,90 @@ func TestUtlsSetupStopsWhenRequestEndsDuringBackoff(t *testing.T) {
 // upstream -- goes back to the caller after one attempt. Retrying it could
 // run and bill the request twice; the boundary is the whole point of doing
 // the retry below RoundTrip rather than around it.
+//
+// Each case fails the first request only once the upstream has read all of
+// it, and lets any later request through: a retry shows up as a second
+// upstream hit and a success, rather than hiding behind a repeat of the same
+// failure. The cases are the shapes such a failure takes: the upstream
+// resetting the stream, and the path dying under the request -- hung up, or
+// gone silent so that only the PING health check notices. The last two are
+// what a node dying mid-request looks like, surface as connection errors
+// rather than stream errors, and are the likeliest to be "helpfully" retried
+// by error type.
 func TestUtlsRequestErrorAfterSetupIsNotRetried(t *testing.T) {
-	setSetupTimings(t, 3, 2*time.Second, []time.Duration{10 * time.Millisecond, 20 * time.Millisecond})
-	captureSetupLogs(t)
-	var hits atomic.Int32
-	upstream, roots := newH2Upstream(t, func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		_, _ = io.Copy(io.Discard, r.Body)
-		// Resets the stream (RST_STREAM) after the whole request arrived.
-		panic(http.ErrAbortHandler)
-	})
-	p := newConnectProxy(t, tunnelTo(upstream, nil))
-	rt := newTestRoundTripper(t, p, roots)
+	cases := []struct {
+		name string
+		// upstreamResets makes the upstream fail the first request itself;
+		// otherwise onArrival acts on the proxy's first connection.
+		upstreamResets bool
+		onArrival      func(c net.Conn, frozen *atomic.Bool)
+	}{
+		{name: "upstream resets the stream", upstreamResets: true},
+		{name: "connection closed after the request arrived", onArrival: func(c net.Conn, _ *atomic.Bool) {
+			_ = c.Close()
+		}},
+		{name: "connection silent after the request arrived", onArrival: func(_ net.Conn, frozen *atomic.Bool) {
+			frozen.Store(true)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setSetupTimings(t, 3, 2*time.Second, []time.Duration{10 * time.Millisecond, 20 * time.Millisecond})
+			// The silent path is noticed by the health check, ~400ms in.
+			setH2Timings(t, 200*time.Millisecond, 200*time.Millisecond, h2IdleConnTimeout)
+			captureSetupLogs(t)
+			var hits atomic.Int32
+			arrived := make(chan struct{})
+			upstream, roots := newH2Upstream(t, func(w http.ResponseWriter, r *http.Request) {
+				n := hits.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				if n > 1 {
+					_, _ = io.WriteString(w, "ok")
+					return
+				}
+				close(arrived)
+				if tc.upstreamResets {
+					// RST_STREAM, after the whole request arrived.
+					panic(http.ErrAbortHandler)
+				}
+				<-r.Context().Done()
+			})
+			testDone := t.Context()
+			p := newConnectProxy(t, func(p *connectProxy, n int, c net.Conn, br *bufio.Reader) {
+				if n > 1 || tc.onArrival == nil {
+					p.tunnel(c, br, upstream, nil, nil)
+					return
+				}
+				var frozen atomic.Bool
+				go func() {
+					select {
+					case <-arrived:
+						tc.onArrival(c, &frozen)
+					case <-testDone.Done():
+					}
+				}()
+				p.tunnel(c, br, upstream, &frozen, nil)
+			})
+			rt := newTestRoundTripper(t, p, roots)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	resp, err := roundTripWithin(t, rt, newTestRequest(t, ctx, bytes.Repeat([]byte("x"), 64<<10)), 15*time.Second)
-	if resp != nil {
-		_ = resp.Body.Close()
-	}
-	if err == nil {
-		t.Fatal("a reset stream came back as a response")
-	}
-	if got := hits.Load(); got != 1 {
-		t.Errorf("upstream saw the request %d times, want exactly 1", got)
-	}
-	if got := p.accepted.Load(); got != 1 {
-		t.Errorf("proxy saw %d connections, want 1: an error after setup must not start another", got)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			resp, err := roundTripWithin(t, rt, newTestRequest(t, ctx, bytes.Repeat([]byte("x"), 64<<10)), 15*time.Second)
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			if err == nil {
+				t.Error("the failed request came back as a response: it was sent again")
+			} else if ctx.Err() != nil {
+				t.Fatalf("the 10s watchdog ended the request (err %v): the failure was never noticed", err)
+			}
+			if got := hits.Load(); got != 1 {
+				t.Errorf("upstream saw the request %d times, want exactly 1", got)
+			}
+			if got := p.accepted.Load(); got != 1 {
+				t.Errorf("proxy saw %d connections, want 1: an error after setup must not start another", got)
+			}
+		})
 	}
 }
 
@@ -573,7 +649,7 @@ func TestUtlsSetupWaitersFollowTheirOwnContext(t *testing.T) {
 			silentBeforeConnect(p, n, c, br)
 			return
 		}
-		p.tunnel(c, br, upstream, nil)
+		p.tunnel(c, br, upstream, nil, nil)
 	})
 	rt := newTestRoundTripper(t, p, roots)
 
@@ -660,9 +736,7 @@ func TestUtlsSetupWaitersFollowTheirOwnContext(t *testing.T) {
 // more bytes, as when a node vanishes behind the proxy -- is detected by the
 // HTTP/2 PING health check and fails the body read, instead of hanging it.
 func TestUtlsConnectionDetectsSilentDeathMidResponse(t *testing.T) {
-	oldIdle, oldPing := h2ReadIdleTimeout, h2PingTimeout
-	h2ReadIdleTimeout, h2PingTimeout = 200*time.Millisecond, 200*time.Millisecond
-	t.Cleanup(func() { h2ReadIdleTimeout, h2PingTimeout = oldIdle, oldPing })
+	setH2Timings(t, 200*time.Millisecond, 200*time.Millisecond, h2IdleConnTimeout)
 	captureSetupLogs(t)
 
 	upstream, roots := newH2Upstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -699,5 +773,87 @@ func TestUtlsConnectionDetectsSilentDeathMidResponse(t *testing.T) {
 	}
 	if elapsed > 3*time.Second {
 		t.Errorf("dead connection detected after %v; PING health check should take ~400ms", elapsed)
+	}
+}
+
+// The per-attempt bound ends with setup: a response that runs well past
+// connectAttemptTimeout -- as a long generation runs past the real 15s -- is
+// read to the end. Whatever enforces the bound (the attempt's context, the
+// guard that closes the raw connection, proxyutil's CONNECT watchdog, or a
+// deadline set on the connection) must be gone once setup has succeeded, or
+// every long response would be cut at 15s. The idle-connection timeout is
+// shorter than the pause here too: it may only run while no stream is open.
+func TestUtlsAttemptBoundDoesNotCapTheResponse(t *testing.T) {
+	const attemptTimeout = 500 * time.Millisecond
+	setSetupTimings(t, 1, attemptTimeout, nil)
+	setH2Timings(t, h2ReadIdleTimeout, h2PingTimeout, attemptTimeout)
+	captureSetupLogs(t)
+	upstream, roots := newH2Upstream(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = io.WriteString(w, "a")
+		w.(http.Flusher).Flush()
+		time.Sleep(3 * attemptTimeout)
+		_, _ = io.WriteString(w, "b")
+	})
+	p := newConnectProxy(t, tunnelTo(upstream, nil))
+	rt := newTestRoundTripper(t, p, roots)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	resp, err := roundTripWithin(t, rt, newTestRequest(t, ctx, []byte("{}")), 10*time.Second)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := returnWithin(t, 10*time.Second, func() ([]byte, error) { return io.ReadAll(resp.Body) })
+	if err != nil || string(body) != "ab" {
+		t.Fatalf("read %q, %v; want \"ab\" and no error: a bound meant for setup or for idle connections cut a live response", body, err)
+	}
+}
+
+// The connection a request leaves behind is closed once it has carried no
+// stream for h2IdleConnTimeout. Every request builds its own round tripper,
+// so that connection is never reused, and nothing else here closes it. The
+// health check PINGs it whether or not a stream is open, and every PING and
+// ack resets the traffic-counting idle timers along the path (Clash's, the
+// node's) that used to reap it -- so without this bound each request would
+// leave a connection PINGing through the proxy for good. Here the health
+// check runs every 100ms throughout, and the client must still hang up.
+func TestUtlsIdleConnectionIsClosed(t *testing.T) {
+	const idleConn = 500 * time.Millisecond
+	setSetupTimings(t, 1, 2*time.Second, nil)
+	setH2Timings(t, 100*time.Millisecond, 100*time.Millisecond, idleConn)
+	captureSetupLogs(t)
+	upstream, roots := newH2Upstream(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = io.WriteString(w, "ok")
+	})
+	clientGone := make(chan struct{})
+	var goneOnce sync.Once
+	p := newConnectProxy(t, func(p *connectProxy, _ int, c net.Conn, br *bufio.Reader) {
+		p.tunnel(c, br, upstream, nil, func() { goneOnce.Do(func() { close(clientGone) }) })
+	})
+	rt := newTestRoundTripper(t, p, roots)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resp, err := roundTripWithin(t, rt, newTestRequest(t, ctx, []byte("{}")), 8*time.Second)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil || string(body) != "ok" {
+		t.Fatalf("read %q, %v; want \"ok\"", body, err)
+	}
+
+	select {
+	case <-clientGone:
+	case <-time.After(idleConn + 3*time.Second):
+		t.Fatalf("the client kept its idle connection open %v past the %v idle timeout: "+
+			"left-behind connections are never closed", 3*time.Second, idleConn)
+	}
+	if got := p.accepted.Load(); got != 1 {
+		t.Errorf("proxy saw %d connections, want 1", got)
 	}
 }

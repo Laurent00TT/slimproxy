@@ -336,7 +336,10 @@ contract:
   byte of the request is sent — is retried inside the engine, each attempt bounded at
   15s, three attempts in all with 1s and 3s pauses, abandoned as soon as the client
   goes away. A resend there cannot run or bill the request twice; once the request is
-  on the wire, a failure is still attempted once. Each failed setup is logged as
+  on the wire, a failure is still attempted once. The retry helps with a transient
+  failure, or one Clash routes around between attempts; a node that stays dead, and that
+  Clash keeps choosing, fails all three — the EOF shape then after ~19s rather than ~5s,
+  a hang after ~49s rather than ~60s. Each failed setup is logged as
   `utls: connection setup to … failed in <dial|handshake|h2> phase on attempt n/3` —
   the journal keeps only the cause, so that line is where a stall's location shows.
 - **`stream-idle-timeout` cuts dead streams loose.** A streaming response that sends nothing
@@ -349,7 +352,11 @@ contract:
   connection to Anthropic or chatgpt.com after 30s without a frame and drops it if no ack
   comes within 15s, so a connection that is actually dead fails within ~45s of its last frame
   even with the guard off. What only the guard catches is an upstream that stays connected but
-  stops sending — with the guard off, that still hangs indefinitely.
+  stops sending — with the guard off, that still hangs indefinitely. Those PINGs go out on an
+  idle connection too, and every request leaves one behind (each builds its own client, so
+  none is reused), so the engine also closes a connection once it has carried no request for
+  90s; without that, the PINGs would keep every one of them open through Clash and the node
+  for good.
 - **`stream-early-flush` buys streaming requests out of Cloudflare's 100s guillotine.** Behind
   a Cloudflare tunnel, an origin that shows no response headers within ~100 seconds is severed
   as a 524 (the limit is fixed on free/Pro plans) — and the upstream handler writes nothing

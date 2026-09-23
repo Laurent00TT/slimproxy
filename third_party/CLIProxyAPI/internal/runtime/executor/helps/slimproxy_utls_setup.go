@@ -44,9 +44,22 @@ var (
 	// connection that dies silently mid-response (a node gone without a
 	// FIN or RST reaching us through the proxy) hangs the stream until
 	// something far above gives up. Anthropic streams carry SSE pings, so a
-	// PING after 30s of silence costs nothing on a live connection.
+	// PING after 30s of silence costs nothing on a live connection. It is
+	// sent whether or not a stream is open, though, which is what
+	// h2IdleConnTimeout is for.
 	h2ReadIdleTimeout = 30 * time.Second
 	h2PingTimeout     = 15 * time.Second
+	// h2IdleConnTimeout closes a connection once it has carried no stream
+	// for that long. Every request builds its own round tripper, so the
+	// connection a request leaves behind is never reused and nothing here
+	// ever closes it: it used to be reaped by an idle timer further along
+	// (Clash's, the node's, the peer's). The health check above PINGs idle
+	// connections too, and each PING and ack is traffic that resets every
+	// such timer counting it, so without this bound every request would
+	// leave a connection PINGing through Clash and the node for good. The
+	// timer runs only while no stream is open, so it never cuts a response
+	// however long it runs. 90s, as net/http's DefaultTransport.
+	h2IdleConnTimeout = 90 * time.Second
 )
 
 // The setup phases named in the per-attempt log line -- the only record of
@@ -174,7 +187,11 @@ func (t *utlsRoundTripper) connectOnce(ctx context.Context, host, addr string) (
 		return nil, setupPhaseHandshake, attemptError(attemptCtx, err)
 	}
 
-	tr := &http2.Transport{ReadIdleTimeout: h2ReadIdleTimeout, PingTimeout: h2PingTimeout}
+	tr := &http2.Transport{
+		ReadIdleTimeout: h2ReadIdleTimeout,
+		PingTimeout:     h2PingTimeout,
+		IdleConnTimeout: h2IdleConnTimeout,
+	}
 	h2Conn, err := tr.NewClientConn(tlsConn)
 	if err != nil {
 		stopGuard()

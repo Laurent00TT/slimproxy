@@ -639,11 +639,14 @@ models: []            # 模型白名单，空=全部
   唯一真会发生的重试在这个循环下面一层：到 Anthropic 或 chatgpt.com 的**建连**
   失败——拨号、代理的 CONNECT、TLS 握手，请求一个字节都还没发——由引擎内部
   重试，每次限 15 秒、共 3 次、间隔 1 秒和 3 秒，客户端一断开就停。这一步不会
-  让上游执行或计费两次；请求一旦发出，之后的失败仍只尝试一次。每次建连失败在
-  应用日志里记一行 `utls: connection setup to … failed in <dial|handshake|h2>
-  phase on attempt n/3 after …`，重试成功另记 `set up on attempt n/3`。事件流
-  只记归类（`slimproxy log` 的 connect / tls / timeout），建连卡在哪一段、卡了
-  多久，要看这一行。
+  让上游执行或计费两次；请求一旦发出，之后的失败仍只尝试一次。重试救得了瞬时
+  故障，或 Clash 在两次尝试之间换了节点的情况；节点一直死着、Clash 又一直选它
+  时（`select` 组固定在它上面，或 `url-test` / `fallback` 还没到下一次探测），
+  三次都会失败——EOF 形态要约 19 秒才失败（原来约 5 秒），挂起形态约 49 秒
+  （原来约 60 秒）。每次建连失败在应用日志里记一行 `utls: connection setup to …
+  failed in <dial|handshake|h2> phase on attempt n/3 after …`，重试成功另记
+  `set up on attempt n/3`。事件流只记归类（`slimproxy log` 的 connect / tls /
+  timeout），建连卡在哪一段、卡了多久，要看这一行。
 
 - **`claude-code-cache-ttl: "1h"` 让长轮次不再整段重写对话。** Anthropic 的提示缓存
   默认只活 5 分钟，而且从上一次读到该前缀的**请求开始**计时——生成回答的时间也算。
