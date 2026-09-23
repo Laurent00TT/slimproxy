@@ -4,7 +4,7 @@
 
 First public release.
 
-- Reverse proxy over CLIProxyAPI's SDK: one config file (18 keys),
+- Reverse proxy over CLIProxyAPI's SDK: one config file (19 keys),
   fail-closed inbound auth, management surface pinned off.
 - Streaming responses that go silent are severed after 90s and the caller gets
   an explicit timeout to retry against, instead of hanging until its own stall
@@ -16,6 +16,13 @@ First public release.
   as 524s at its fixed ~100s header deadline. Failures after the preamble
   travel as in-stream SSE error events; a four-minute silence watchdog bounds
   the heartbeat. On by default; `stream-early-flush` tunes or disables it.
+- `claude-code-cache-ttl: "1h"` rewrites every prompt-cache breakpoint Claude
+  Code sends to the one-hour lifetime, inside the engine's executor. The
+  default 5 minutes are timed from the start of the request that last touched
+  the prefix, generation included, so agentic turns longer than that came back
+  to an evicted conversation and wrote all of it again at full price — 18 full
+  rewrites of a ~300k-token prefix in one morning, measured 2026-09-16. Off by
+  default (breakpoints go as written); `slimproxy init` generates `"1h"`.
 - CLI: `serve`, `check`, `init`, `status`, `doctor`, `auth`, `tunnel`,
   `routes`, `log`, `test`, `version`; full-screen terminal dashboard when run
   on a terminal.

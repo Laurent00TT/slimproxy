@@ -80,6 +80,11 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	// already sends multiple cache_control blocks.
 	body = enforceCacheControlLimit(body, 4)
 
+	// slimproxy patch (SLIMPROXY_PATCHES.md 第 11 条): pin every Claude Code
+	// breakpoint to the configured lifetime BEFORE the ordering normalizer
+	// below, so a uniform 1h never trips its "1h after 5m" downgrade.
+	body = applyClaudeCodeCacheTTL(ctx, e.cfg, body)
+
 	// Normalize TTL values to prevent ordering violations under prompt-caching-scope-2026-01-05.
 	// A 1h-TTL block must not appear after a 5m-TTL block in evaluation order (tools→system→messages).
 	body = normalizeCacheControlTTL(body)

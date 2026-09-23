@@ -590,7 +590,7 @@ slimproxy.exe init -force                   # 覆盖已有的
 
 ## 7. 配置文件
 
-`slimproxy.yaml` 一共 18 项，没有隐藏选项（下面列出常用的，另有 `log-dir`、
+`slimproxy.yaml` 一共 19 项，没有隐藏选项（下面列出常用的，另有 `log-dir`、
 `request-log-dir`、`journal-days` 三项在各自的小节里讲）。
 
 ```yaml
@@ -610,6 +610,7 @@ max-retry-interval: 30    # 等待冷却凭据的秒数上限
 max-retry-credentials: 0  # 一个请求最多试几个凭据，0=不限
 stream-idle-timeout: 0    # 流多少秒无数据就切断让客户端重试，0=默认 90s，负数=关闭
 stream-early-flush: 0     # 流式请求多少秒无输出就提前发 200+SSE 头保住连接（防 Cloudflare 524），0=默认 30s，负数=关闭
+claude-code-cache-ttl: "" # 把 Claude Code 发来的全部缓存断点改成 "1h"（或 "5m"）；空=按客户端原样转发（见下）
 
 debug: false          # 提高日志详细度
 request-log: false    # 记录完整请求/响应体（见安全须知）
@@ -635,6 +636,17 @@ models: []            # 模型白名单，空=全部
   失败都只尝试一次（对 v7.2.103 实测，`TestUpstreamRetry_*` 特征测试钉住此
   行为）。它只在多凭据、或 429 带 `retry-after` 时才可能生效。写 0 则连这个
   循环也整个关掉——上游库对这一项没有默认值。
+
+- **`claude-code-cache-ttl: "1h"` 让长轮次不再整段重写对话。** Anthropic 的提示缓存
+  默认只活 5 分钟，而且从上一次读到该前缀的**请求开始**计时——生成回答的时间也算。
+  Claude Code 一轮跑过四五分钟（agentic 循环很常见），下一轮到达时整段前缀已被逐出，
+  整个对话按全价重写：2026-09-16 一上午实测 18 次约 30 万 token 的全量重建，面板上的
+  「缓存」掉到 57%。写 `"1h"` 后代理把 claude-cli 发来的**每个**断点都改成 1 小时
+  生命期（只补缺的话，排在 5m 断点后面的 1h 会被 Anthropic 拒绝，引擎会把它们一律
+  降回 5m）。代价：1 小时写入按基础输入价 2 倍计，5 分钟是 1.25 倍——五分钟内从不
+  回来的客户端白付溢价，所以默认留空、只对 Claude Code 生效。`slimproxy init` 生成
+  的配置直接写 `"1h"`。验证方法：`slimproxy log` 里超过 5 分钟间隔之后的那一轮，
+  应当仍是「缓存命中」而不是「建缓存」。
 
 - **`lang` 控制整个界面的语言**——面板、命令输出、诊断报告、错误消息。
   留空时跟随系统语言（中文系统显示中文，其他显示英文）。写进配置的好处是

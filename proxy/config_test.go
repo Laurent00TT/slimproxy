@@ -67,6 +67,74 @@ func TestMaterializedConfigRoundTrips(t *testing.T) {
 	}
 }
 
+// TestClaudeCodeCacheTTLReachesEngine pins the knob's whole delivery path:
+// Config -> build() -> the fork's ClaudeCodeConfig -> the materialized file
+// CLIProxyAPI re-reads on reload. The executor reads the value from the last
+// of those (SLIMPROXY_PATCHES.md 第 10-12 条), so a knob that stops short of
+// it is a knob that silently does nothing -- and a renamed yaml tag on either
+// side would stop it exactly there.
+func TestClaudeCodeCacheTTLReachesEngine(t *testing.T) {
+	dir := t.TempDir()
+	c := Config{
+		Host:               "127.0.0.1",
+		Port:               8317,
+		APIKeys:            []string{"k"},
+		AuthDir:            filepath.Join(dir, "auths"),
+		ClaudeCodeCacheTTL: " 1h ",
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if got := c.build().ClaudeCode.CacheTTL; got != "1h" {
+		t.Fatalf("build() handed the engine claude-code.cache-ttl %q, want 1h (trimmed)", got)
+	}
+
+	path, err := materialize(c.build(), dir)
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	got, err := cliproxyconfig.LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig rejected the materialized config: %v", err)
+	}
+	if got.ClaudeCode.CacheTTL != "1h" {
+		t.Fatalf("claude-code.cache-ttl did not survive the round trip: %q", got.ClaudeCode.CacheTTL)
+	}
+
+	// Unset must stay unset: the executor treats "" as "send as written",
+	// and a default sneaking in here would rewrite every client's breakpoints.
+	c.ClaudeCodeCacheTTL = ""
+	if got := c.build().ClaudeCode.CacheTTL; got != "" {
+		t.Fatalf("an empty knob reached the engine as %q", got)
+	}
+}
+
+// TestClaudeCodeCacheTTLValidated: the engine forwards the value verbatim and
+// Anthropic would reject every Claude Code request at run time, so anything
+// but the two lifetimes that exist has to die at startup.
+func TestClaudeCodeCacheTTLValidated(t *testing.T) {
+	base := Config{Port: 8317, APIKeys: []string{"k"}}
+	for _, ok := range []string{"", "5m", "1h", " 1h"} {
+		c := base
+		c.ClaudeCodeCacheTTL = ok
+		if err := c.Validate(); err != nil {
+			t.Errorf("claude-code-cache-ttl %q rejected: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"2h", "60m", "1H", "true"} {
+		c := base
+		c.ClaudeCodeCacheTTL = bad
+		err := c.Validate()
+		if err == nil {
+			t.Errorf("claude-code-cache-ttl %q accepted; Anthropic would refuse it on every request", bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), "claude-code-cache-ttl") {
+			t.Errorf("error for %q does not name the knob: %v", bad, err)
+		}
+	}
+}
+
 // TestManagementPasswordEnvIsRejected guards the gap between what slimproxy
 // claims and what CLIProxyAPI does.
 //

@@ -79,6 +79,11 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	// Enforce Anthropic's cache_control block limit (max 4 breakpoints per request).
 	body = enforceCacheControlLimit(body, 4)
 
+	// slimproxy patch (SLIMPROXY_PATCHES.md 第 11 条): pin every Claude Code
+	// breakpoint to the configured lifetime BEFORE the ordering normalizer
+	// below, so a uniform 1h never trips its "1h after 5m" downgrade.
+	body = applyClaudeCodeCacheTTL(ctx, e.cfg, body)
+
 	// Normalize TTL values to prevent ordering violations under prompt-caching-scope-2026-01-05.
 	body = normalizeCacheControlTTL(body)
 

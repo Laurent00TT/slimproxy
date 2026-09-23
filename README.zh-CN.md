@@ -301,6 +301,16 @@ err = stream.ReadFrom(ctx, resp.Body, func(frame []byte) error {
   沉默；沉默超过四分钟由看门狗终结。代价只落在慢请求上：预发头之后的失败改以流内 SSE
   error 事件送达，而不是 HTTP 状态码（也没有 `Retry-After`）。阈值内答复的请求——几乎
   全部——逐字节原样。写 `0` 表示用默认值，负数关闭。
+- **`claude-code-cache-ttl: "1h"` 让长轮次不再整段重写对话。** Anthropic 的提示缓存
+  默认只活 5 分钟，而且从上一次读到该前缀的**请求开始**计时——生成回答的时间也算——
+  于是一轮跑过四五分钟的 agentic 循环回来时整段前缀已被逐出，整个对话按全价重写
+  （2026-09-16 一上午实测 18 次约 30 万 token 的全量重建）。写 `"1h"` 后代理把
+  Claude Code 发来的每个断点都改成 1 小时生命期：是每个，不只是缺 ttl 的那些，因为
+  Anthropic 拒绝排在 5m 断点之后的 1h 断点，引擎会把这种混写一律降回 5m。代价是
+  1 小时写入按基础输入价 2 倍计（5 分钟是 1.25 倍），五分钟内从不回来的客户端等于
+  白付溢价——所以默认留空（断点按原样转发）、只对 Claude Code 生效；`slimproxy init`
+  生成的配置直接写 `"1h"`。实现在引擎 executor 里的 fork 补丁，见
+  `third_party/CLIProxyAPI/SLIMPROXY_PATCHES.md`。
 - **`request-log` 逐字写入请求体。** 脱敏只按 header 和 query 的名字匹配，名字
   里得含 `authorization`、`api-key`、`apikey`、`token` 或 `secret` 才会命中——
   `Cookie` 不含，明文落盘。请求体或响应体里携带的任何凭据都会未脱敏地进日志。

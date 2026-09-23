@@ -69,6 +69,21 @@ stream-idle-timeout: 0
 # HTTP status. 0 = the 30s default, negative = off.
 stream-early-flush: 0
 
+# claude-code-cache-ttl pins the lifetime of every prompt-cache breakpoint on
+# requests from Claude Code (User-Agent claude-cli/*). Anthropic's cache lives
+# 5 minutes by default, timed from the START of the request that last touched
+# the prefix -- generation time counts -- so an agentic turn that runs past
+# four minutes or so comes back to find the whole conversation evicted and
+# writes it again at full price (18 full rewrites of a ~300k-token prefix in
+# one morning, measured 2026-09-16). "1h" rewrites every breakpoint to the
+# one-hour lifetime, "5m" forces the default, "" sends them as Claude Code
+# wrote them. Every breakpoint rather than only the ones missing a ttl:
+# Anthropic rejects a 1h breakpoint placed after a 5m one, and the engine
+# flattens such a mix back to 5m. The trade: a 1h write bills at 2x the base
+# input rate against 1.25x for 5m, so a client that never returns within five
+# minutes pays the premium for nothing. Other clients are never touched.
+claude-code-cache-ttl: ""
+
 # Diagnostics.
 #
 # request-log writes full request AND response bodies to disk. Bodies are

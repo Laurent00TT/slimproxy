@@ -106,6 +106,34 @@ func TestForkCatalogClientGuard(t *testing.T) {
 		})
 }
 
+// TestForkCacheTTLGuard runs the fork's guard tests for the Claude Code
+// cache-lifetime patch (SLIMPROXY_PATCHES.md 第 10-12 条).
+//
+// What it defends: the two one-line call sites in the claude executor that
+// rewrite every Claude Code breakpoint to claude-code.cache-ttl BEFORE the
+// ordering normalizer runs. Lose either and the knob goes silently inert on
+// that path -- the request still succeeds, the cache still works at 5m, and
+// the only symptom is the full-prefix rewrite after every long turn coming
+// back (the measured 2026-09-16 pattern the knob exists to end). The
+// slimproxy-side test (proxy/config_test.go TestClaudeCodeCacheTTLReachesEngine)
+// pins that the value reaches the engine's config; these pin that the engine
+// acts on it.
+func TestForkCacheTTLGuard(t *testing.T) {
+	runForkGuard(t, "fork 的 Claude Code 缓存 TTL 守卫（executor 里的改写调用点可能被升级冲掉了，长轮次后整段前缀重写会回来）",
+		[]string{"./internal/runtime/executor/"},
+		[]string{
+			"TestClaudeCodeCacheTTL_PinsEveryBreakpoint",
+			"TestClaudeCodeCacheTTL_SurvivesOrderingNormalizer",
+			"TestClaudeCodeCacheTTL_LeavesOtherClientsAlone",
+			"TestClaudeCodeCacheTTL_UnsetKnobIsANoOp",
+			"TestClaudeCodeCacheTTL_NothingToDoReturnsSameBytes",
+			"TestClaudeCodeCacheTTLConfigKey",
+			"TestClaudeStreamCarriesConfiguredCacheTTLUpstream",
+			"TestClaudeExecuteCarriesConfiguredCacheTTLUpstream",
+			"TestClaudeStreamWithoutKnobSendsBreakpointsAsWritten",
+		})
+}
+
 // TestForkBaselineVersionMatchesPatchDoc pins the version bookkeeping nothing
 // else enforces: with a directory replace active, go.mod's require version is
 // pure annotation (the build always comes from third_party/), and `slimproxy

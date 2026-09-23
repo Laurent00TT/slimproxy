@@ -96,6 +96,44 @@ Execute 的 bypass 分支（上游返回 SSE body）同样按行命中才发布�
    启动刷新。forkcheck 的 TestForkCatalogClientGuard 把第 8/9 条的六个
    测试接进根模块 `go test ./...`。
 
+Anthropic 的提示缓存默认只活 5 分钟，而且从**上一次读到该前缀的请求开始**
+计时——生成回答的时间也算在内。Claude Code 一轮跑过四五分钟（agentic 循环里
+很常见），下一轮到达时整段前缀已被逐出，整个对话按全价重写一遍：2026-09-16
+一上午实测 18 次约 30 万 token 的全量重建，其中 15 次紧跟在超过 5 分钟的间隔
+之后。1 小时的缓存生命期就是为这种场景准备的，客户端却不会在每个断点上都
+要求它。executor 是唯一既能看到完整请求体、又知道是哪个客户端发的地方，所以
+改写放在这里。改写是**全部断点统一**而不是只补缺：Anthropic 要求长生命期的
+断点排在短的前面（tools → system → messages），上游的 `normalizeCacheControlTTL`
+会把排在 5m 之后的 1h 一律降回 5m——混着写等于白写；统一写就没有顺序可违反，
+这也决定了调用点必须在 normalizer **之前**。只对 claude-cli 生效，因为理由
+是这个客户端的轮次长度，而代价是真的（1h 写入按基础输入价 2 倍计，5m 是
+1.25 倍）。
+
+10. `internal/config/sdk_config.go` `ClaudeCodeConfig` 加字段
+    `CacheTTL`（yaml `claude-code.cache-ttl`，`omitempty`）。slimproxy 的
+    `claude-code-cache-ttl` 经 `proxy.Config.build()` 写进这里，随 effective
+    config 一起物化、一起热重载。空 = 按客户端发来的原样转发。
+
+11. `internal/runtime/executor/slimproxy_cache_ttl.go`（新增文件）
+    `applyClaudeCodeCacheTTL(ctx, cfg, payload)`：User-Agent 以 `claude-cli`
+    开头（与 `helps.ShouldCloak` 的 auto 判定同一定义）且 `CacheTTL` 非空时，
+    把 tools / system / messages content 里每个 `cache_control` 对象的 `ttl`
+    改成该值；没有 `cache_control` 的块不加。无事可做时返回原 slice（字节
+    同一性）。调用点各一行：`claude_executor_execute.go` 与
+    `claude_executor_stream.go` 里 `enforceCacheControlLimit` 之后、
+    `normalizeCacheControlTTL` 之前（带 `slimproxy patch` 注释）。
+    count_tokens 路径（`claude_executor_tokens.go`）不动：计数请求不建缓存，
+    ttl 对它没有意义。
+
+12. `internal/runtime/executor/slimproxy_cache_ttl_test.go`（新增文件）
+    九个守卫：函数级五个（全部断点被改写、改写后能过 normalizer、非
+    claude-cli 不动、开关为空不动、无事可做返回原字节）、配置键一个、
+    executor 级三个（真 executor 打到假上游，断言上游收到的三个断点都是
+    1h——流式与非流式各一，另一个是开关为空时按原样送达的对照）。三个
+    executor 级测试是唯一能发现调用点被升级冲掉的守卫；已做变异检查：
+    注释掉任一调用点、或把改写改成只补缺，对应测试即红。forkcheck 的
+    TestForkCacheTTLGuard 把九个测试接进根模块 `go test ./...`。
+
 # 升级上游版本的流程
 
 1. `go mod download github.com/router-for-me/CLIProxyAPI/v7@<新版本>`
@@ -103,10 +141,12 @@ Execute 的 bypass 分支（上游返回 SSE body）同样按行命中才发布�
    `slimproxy_*` 文件：`claude_ensure_published_test.go`、
    `sdk/api/handlers/slimproxy_context_reparent_test.go`、
    `sdk/cliproxy/slimproxy_model_catalog{,_test}.go`、
-   `internal/registry/slimproxy_catalog_client{,_test}.go`
+   `internal/registry/slimproxy_catalog_client{,_test}.go`、
+   `internal/runtime/executor/slimproxy_cache_ttl{,_test}.go`
 3. 按上面的清单重打全部补丁（grep 上游新代码确认发布点、
-   `GetContextWithCancel` 与两个拉取器的 `client :=` 行没变形；
-   grep `slimproxy patch` 核对齐全）
+   `GetContextWithCancel` 与两个拉取器的 `client :=` 行没变形、
+   两处 `normalizeCacheControlTTL(body)` 调用仍在且第 11 条的调用点
+   排在它前面；grep `slimproxy patch` 核对齐全）
 4. 仓库根目录 `go build ./... && go test ./...`。**不要**写
    `go test ./third_party/...`：本目录是嵌套 module，根目录的包通配符
    进不来——那条命令只会打一行 warning 然后 exit 0，一个 fork 测试都
@@ -114,7 +154,7 @@ Execute 的 bypass 分支（上游返回 SSE body）同样按行命中才发布�
    的 `forkcheck` 包：它 cd 进本目录跑第 3 条补丁的回归测试（-run 只挑
    两个 EnsurePublished 测试——上游自己的 xai TTFT 断言在 Windows 上
    会因时钟粒度偶发翻红）、第 6 条的三个 ctx 重挂守卫、第 8/9 条的六个
-   目录客户端守卫，并核对第 5 步的版本同步。每条守卫都用 `-v` 跑并逐个
+   目录客户端守卫、第 12 条的九个缓存 TTL 守卫，并核对第 5 步的版本同步。每条守卫都用 `-v` 跑并逐个
    核对 `--- PASS:` 行：只看退出码会在测试文件被升级冲掉时假绿——
    `go test -run` 对空匹配打印 `[no tests to run]` 然后 exit 0。
    要手工全量跑上游套件时：`cd third_party/CLIProxyAPI && go test ./...`。
@@ -128,5 +168,7 @@ Execute 的 bypass 分支（上游返回 SSE body）同样按行命中才发布�
 上游若合入等价的 EnsurePublished 兜底（可提 PR 引用 openai_compat 的
 先例），第 1-3 条可撤。上游若让 SDK 自己启动目录刷新、并让两个拉取器
 经 `util.SetProxy` 建客户端，第 7-9 条可撤——slimproxy 侧改为直接调
-上游的入口即可。全部补丁都撤掉后，删除本目录并移除 go.mod 的 replace
-行。
+上游的入口即可。上游若自己提供按客户端改写缓存 ttl 的配置项（可提 PR，
+理由与实测数据见第 10-12 条前的说明），第 10-12 条可撤——slimproxy 的
+`claude-code-cache-ttl` 改为映射到上游的键即可。全部补丁都撤掉后，删除
+本目录并移除 go.mod 的 replace 行。

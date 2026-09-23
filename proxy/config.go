@@ -124,6 +124,25 @@ type Config struct {
 	// proxy/earlyflush.go.
 	StreamEarlyFlush int `yaml:"stream-early-flush"`
 
+	// ClaudeCodeCacheTTL pins the lifetime of every prompt-cache breakpoint on
+	// requests from Claude Code (User-Agent claude-cli/*): "" sends them as
+	// the client wrote them, "1h" or "5m" rewrites all of them.
+	//
+	// Exists because the default five-minute lifetime is measured from the
+	// START of the request that last touched the prefix, so a turn that spends
+	// longer than that generating -- agentic loops routinely do -- returns to
+	// find the whole conversation evicted and writes it again at full price:
+	// 18 full rewrites of a ~300k-token prefix in one morning, measured
+	// 2026-09-16. Rewritten uniformly rather than only where a ttl is missing
+	// because Anthropic rejects a 1h breakpoint placed after a 5m one and the
+	// engine flattens such a mix back to 5m. The price is real: a 1h write
+	// bills at 2x the base input rate against 1.25x for 5m, so a client that
+	// never returns within five minutes anyway pays the premium for nothing --
+	// hence off by default and Claude Code only. Applied inside the engine's
+	// executor, the one place that sees the request whole and knows who sent
+	// it (third_party/CLIProxyAPI/SLIMPROXY_PATCHES.md 第 10-12 条).
+	ClaudeCodeCacheTTL string `yaml:"claude-code-cache-ttl"`
+
 	// Lang selects the interface language: "zh", "en", or empty to follow the
 	// system locale.
 	//
@@ -223,6 +242,14 @@ func (c Config) StreamEarlyFlushSummary() string {
 	default:
 		return fmt.Sprintf("%d s", c.StreamEarlyFlush)
 	}
+}
+
+// ClaudeCodeCacheTTLSummary renders the cache-lifetime knob for an operator.
+func (c Config) ClaudeCodeCacheTTLSummary() string {
+	if strings.TrimSpace(c.ClaudeCodeCacheTTL) == "" {
+		return i18n.T("不改写（按 Claude Code 发来的，默认 5m）", "as sent by Claude Code (5m by default)")
+	}
+	return fmt.Sprintf(i18n.T("Claude Code 的全部断点改写为 %s", "every Claude Code breakpoint rewritten to %s"), strings.TrimSpace(c.ClaudeCodeCacheTTL))
 }
 
 // streamEarlyFlush resolves the early-flush knob to a duration, with the same
@@ -325,6 +352,7 @@ func (c *Config) ConfigRows() []ConfigRow {
 		{K: "max-retry-credentials", V: creds},
 		{K: "stream-idle-timeout", V: stall, Warn: c.StreamIdleTimeout < 0},
 		{K: "stream-early-flush", V: c.StreamEarlyFlushSummary(), Warn: c.StreamEarlyFlush < 0},
+		{K: "claude-code-cache-ttl", V: c.ClaudeCodeCacheTTLSummary()},
 		{K: "models", V: models},
 		{K: "management api", V: i18n.T("已禁用", "disabled"), Warn: true},
 		{K: "plugin host", V: i18n.T("已禁用", "disabled"), Warn: true},
@@ -378,6 +406,15 @@ func (c *Config) Validate() error {
 		// startup with this message, so every later Parse call sees input this
 		// has already ruled on.
 		errs = append(errs, fmt.Errorf("lang %q unknown: use \"zh\", \"en\", or leave it out to follow the system locale", c.Lang))
+	}
+	switch strings.TrimSpace(c.ClaudeCodeCacheTTL) {
+	case "", "5m", "1h":
+	default:
+		// The engine forwards the value verbatim and Anthropic would reject
+		// the request -- every Claude Code request -- at run time. Refused
+		// here instead, naming the two lifetimes that exist.
+		errs = append(errs, fmt.Errorf(
+			"claude-code-cache-ttl %q unknown: Anthropic's prompt cache offers \"5m\" and \"1h\"; leave it empty to send breakpoints as Claude Code wrote them", c.ClaudeCodeCacheTTL))
 	}
 	if c.RequestRetry < 0 {
 		errs = append(errs, errors.New("RequestRetry must not be negative"))
@@ -621,6 +658,10 @@ func (c *Config) build() *cliproxyconfig.Config {
 	cfg.RequestRetry = c.RequestRetry
 	cfg.MaxRetryInterval = c.MaxRetryInterval
 	cfg.MaxRetryCredentials = c.MaxRetryCredentials
+
+	// Carried by the fork's ClaudeCodeConfig (SLIMPROXY_PATCHES.md 第 10 条)
+	// so it rides the same materialize/reload path as every other knob.
+	cfg.ClaudeCode.CacheTTL = strings.TrimSpace(c.ClaudeCodeCacheTTL)
 
 	// --- pinned off; see hardeningNotes ---
 

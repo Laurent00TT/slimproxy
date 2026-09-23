@@ -239,6 +239,7 @@ func printCheck(w io.Writer, cfg *proxy.Config, stateDir string) error {
 	if cfg.StreamEarlyFlush < 0 {
 		fmt.Fprint(w, i18n.T("            （关闭后，排队超过 ~100s 的流式请求会被 Cloudflare 斩成 524）\n", "                 (off: streaming requests queued past ~100s get severed as 524s by Cloudflare)\n"))
 	}
+	fmt.Fprintf(w, i18n.T("  缓存 TTL  %s\n", "  cache ttl      %s\n"), cfg.ClaudeCodeCacheTTLSummary())
 	if cfg.ProxyURL != "" {
 		fmt.Fprintf(w, i18n.T("  上游代理  %s\n", "  upstream proxy %s\n"), cfg.ProxyURL)
 		// With the fallback on, "which path right now" is a question the

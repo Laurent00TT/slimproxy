@@ -349,6 +349,18 @@ contract:
   as an in-stream SSE event instead of an HTTP status (and loses `Retry-After`). Requests
   answered inside the threshold — nearly all of them — are byte-for-byte untouched. `0`
   selects the default; a negative value turns the preamble off.
+- **`claude-code-cache-ttl: "1h"` stops long turns from rewriting the whole conversation.**
+  Anthropic's prompt cache lives 5 minutes by default, timed from the *start* of the request
+  that last touched the prefix — generation time counts — so an agentic turn that runs past
+  four minutes or so comes back to find the whole conversation evicted and writes it again at
+  full price (18 full rewrites of a ~300k-token prefix in one morning, measured 2026-09-16).
+  With `"1h"` the proxy rewrites every breakpoint Claude Code sends to the one-hour lifetime:
+  every one, not only those missing a ttl, because Anthropic rejects a 1h breakpoint placed
+  after a 5m one and the engine flattens such a mix back to 5m. The trade is a 1h write at
+  2x the base input rate against 1.25x for 5m, so a client that never returns within five
+  minutes pays the premium for nothing — hence empty by default (breakpoints go as written)
+  and Claude Code only; `slimproxy init` generates `"1h"`. Applied inside the engine's
+  executor via a fork patch, see `third_party/CLIProxyAPI/SLIMPROXY_PATCHES.md`.
 - **`request-log` writes bodies verbatim.** Redaction is header- and query-name based, and
   the name has to contain `authorization`, `api-key`, `apikey`, `token` or `secret` to
   match — `Cookie` does not, and is written in the clear. Any credential carried in a

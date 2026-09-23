@@ -74,6 +74,13 @@ max-retry-credentials: 0
 stream-idle-timeout: 0
 stream-early-flush: 0
 
+# Rewrite every prompt-cache breakpoint Claude Code sends to a one-hour
+# lifetime. The default 5 minutes are timed from the start of the request,
+# generation included, so a turn that runs longer comes back to an evicted
+# conversation and pays to write all of it again. A 1h write bills at 2x base
+# input against 1.25x for 5m; "" sends breakpoints as Claude Code wrote them.
+claude-code-cache-ttl: "1h"
+
 debug: false
 # request-log writes request AND response bodies verbatim. Redaction only
 # covers header names containing authorization, api-key, apikey, token or

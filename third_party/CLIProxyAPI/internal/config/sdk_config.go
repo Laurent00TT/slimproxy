@@ -67,6 +67,13 @@ type SDKConfig struct {
 type ClaudeCodeConfig struct {
 	// DisableCloakingModelList disables model ID cloaking in Anthropic model list responses.
 	DisableCloakingModelList bool `yaml:"disable-cloaking-model-list" json:"disable-cloaking-model-list"`
+
+	// CacheTTL is a slimproxy patch (SLIMPROXY_PATCHES.md 第 10 条): when set
+	// ("5m" or "1h"), every cache_control breakpoint on a request from Claude
+	// Code is rewritten to this lifetime before it leaves for Anthropic. Empty
+	// sends breakpoints as the client wrote them. See
+	// runtime/executor/slimproxy_cache_ttl.go for why.
+	CacheTTL string `yaml:"cache-ttl,omitempty" json:"cache-ttl,omitempty"`
 }
 
 // StreamingConfig holds server streaming behavior configuration.
