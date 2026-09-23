@@ -374,8 +374,8 @@ slimproxy.exe doctor
   PASS     listen-port      127.0.0.1:8317 已被 slimproxy 占用
   PASS     credentials      1 个凭据可解析（未校验有效期与冷却状态）
   PASS     config-fields    没有未知字段
-  WARN     upstream-dns     api.anthropic.com 解析到 198.18.0.101（fake-ip 段）
-           → 让该域名绕过本地代理，或在 hosts 中固定真实地址
+  WARN     upstream-dns     api.anthropic.com 解析为 198.18.0.101，属于 RFC 2544 保留段
+           → 在代理规则中让 api.anthropic.com 走 Anthropic 服务地区的节点
   PASS     upstream-reach   TCP 可连接（未验证 TLS）
   PASS     tunnel           proxy.example.com，2 个连接
 
@@ -851,16 +851,29 @@ slimproxy.exe log -failed -n 20
 ### `doctor` 报 fake-ip 劫持
 
 ```
-WARN  upstream-dns  api.anthropic.com 解析到 198.18.0.101（fake-ip 段）
+WARN  upstream-dns  api.anthropic.com 解析为 198.18.0.101，属于 RFC 2544 保留段（198.18.0.0/15）
 ```
 
-意思是你本机的代理软件（Clash / mihomo / v2ray 之类）把这个域名劫持了。
-`198.18.x.x` 是保留段，不是真实地址。
+意思是你本机的代理软件（Clash / mihomo / v2ray 之类）在用 fake-ip 模式应答 DNS。
+`198.18.x.x` 是保留段，不是真实地址：连接会被代理软件截下，再按它的规则决定从哪里出去。
 
-**后果**：请求可能很慢或者随机失败，长连接会反复断。
+**只有 `proxy-url` 为空时才会告警。** 配了 `proxy-url`，slimproxy 把
+`api.anthropic.com` 这个域名原样交给代理（HTTP CONNECT 和 SOCKS5 带的都是域名），
+由代理自己解析，本机的 fake-ip 应答根本用不上。这时 doctor 报 PASS 并写明原因：
 
-**怎么办**：在你的代理软件里让 `api.anthropic.com`（以及隧道用的
-`*.argotunnel.com`）直连，或者在 hosts 里固定真实 IP。
+```
+PASS  upstream-dns  fake-ip（198.18.0.101）无影响：上游经 proxy-url 发出，api.anthropic.com 由代理自行解析
+```
+
+**后果**：上游从哪里出去，由代理规则决定。出口不在 Anthropic 服务的地区（中国大陆、
+香港都不在内）时，每个请求都会被 403（`Request not allowed`）拒绝；一次 403 会让该凭据的
+模型停用 30 分钟，只有一个凭据时就是 30 分钟不可用。
+
+**怎么办**：在代理规则里让 `api.anthropic.com` 走 Anthropic 服务地区的节点；或者把
+`proxy-url` 设为代理软件的 HTTP 端口（如 `http://127.0.0.1:7897`），交给代理解析。
+**不要为了消掉这条告警让它直连**——在不受服务的地区，直连就是上面那个 403。
+
+隧道用的 `*.argotunnel.com` 是另一回事，见下一节。
 
 ### 隧道时断时续
 
@@ -871,7 +884,7 @@ WARN  upstream-dns  api.anthropic.com 解析到 198.18.0.101（fake-ip 段）
   长连接可能反复断开；让 *.argotunnel.com 直连可消除
 ```
 
-同上——本机代理软件转发 TCP 但不转发 UDP，而 cloudflared 默认用 QUIC（UDP）。
+原因是本机代理软件转发 TCP 但不转发 UDP，而 cloudflared 默认用 QUIC（UDP）。
 让 `*.argotunnel.com` 绕过代理即可。
 
 ### 日志在哪

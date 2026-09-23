@@ -5,7 +5,25 @@ import (
 	"testing"
 
 	"github.com/Laurent00TT/slimproxy/diag"
+	"github.com/Laurent00TT/slimproxy/proxy"
 )
+
+// TestTargetCarriesProxyURL: upstream-dns tells a proxied upstream from a
+// direct one only by the proxy-url it is handed. Dropped here -- in the one
+// function both `doctor` and the dashboard's /doctor build their target with --
+// every proxied deployment on a fake-ip machine is back to a WARN.
+func TestTargetCarriesProxyURL(t *testing.T) {
+	// targetFor also reads ~/.cloudflared; an empty home keeps this test off
+	// the developer's own tunnel config.
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+
+	const raw = "http://127.0.0.1:7897"
+	if got := targetFor(&proxy.Config{ProxyURL: raw}, "slimproxy.yaml", nil).ProxyURL; got != raw {
+		t.Errorf("target.ProxyURL = %q, want %q", got, raw)
+	}
+}
 
 // TestExitForReport pins doctor's machine-readable contract. CI gates on this
 // exit code, so each mapping is stated explicitly rather than inferred.

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
+
 	"github.com/Laurent00TT/slimproxy/tunnel"
 
 	"github.com/Laurent00TT/slimproxy/i18n"
@@ -72,6 +74,11 @@ type Target struct {
 	// mismatches, a missing file. The config is still usable for the checks
 	// that do not depend on it, so these are reported rather than fatal.
 	ConfigErrs []string
+
+	// ProxyURL is the config's proxy-url as written. upstream-dns needs it
+	// because it decides whose DNS answer the upstream connection depends on:
+	// with a proxy, the proxy's; without one, this machine's.
+	ProxyURL string
 
 	// TunnelName is the cloudflared tunnel to query. Empty means either no
 	// tunnel is configured or its configuration could not be read -- which of
@@ -464,7 +471,40 @@ func (t Target) checkConfigFields(ctx context.Context) Result {
 	return Result{Level: Pass, Detail: i18n.T("配置字段与本二进制匹配", "config fields match this binary")}
 }
 
+// upstreamViaProxy reports whether proxy-url hands api.anthropic.com to a proxy
+// by name, so that the proxy -- not this machine -- resolves it.
+//
+// Decided by proxyutil.Parse because that is what the engine decides with:
+// every transport and dialer it builds for proxy-url goes through it. Its proxy
+// schemes all carry the name, never an address: an http/https proxy receives
+// "CONNECT api.anthropic.com:443", and the SOCKS5 dialer sends a domain-name
+// address. Anything else -- empty, the engine's "direct"/"none", a value it
+// rejects -- leaves the dial to this machine's resolver, so it must not earn
+// the pass that only a proxy can justify.
+func upstreamViaProxy(raw string) bool {
+	s, err := proxyutil.Parse(raw)
+	return err == nil && s.Mode == proxyutil.ModeProxy
+}
+
 // checkUpstreamDNS looks for DNS interception on the upstream endpoint.
+//
+// A fake-ip answer is only a finding when the upstream dial consumes it. With
+// proxy-url set, the connection is a CONNECT to the proxy's port and the name
+// travels inside it, so the local answer is never used; warning there drew
+// operators toward the remedy this check used to give -- route
+// api.anthropic.com direct -- which from a region Anthropic does not serve is
+// refused outright. On the deployment that prompted this change every OAuth
+// refresh returned 403 "Request not allowed" while slimproxy went direct, and
+// the fork suspends a model for 30 minutes on 403 (conductor_cooldown.go), which
+// with one credential is a 30-minute outage per 403.
+//
+// So no remedy here names a direct route: the answer is to choose where the
+// traffic exits, not to remove the proxy from its path.
+//
+// proxy-fallback-direct is not modelled. Its direct leg does consume the local
+// answer, but it is taken only while the proxy port is dead, which is the TUN
+// arrangement the flag was built for -- fake-ip is how that TUN sees the name,
+// and its rule for the name decides the exit, which no DNS answer reveals.
 func (t Target) checkUpstreamDNS(ctx context.Context) Result {
 	const host = "api.anthropic.com"
 	ips, err := lookupIPv4(ctx, host)
@@ -477,15 +517,32 @@ func (t Target) checkUpstreamDNS(ctx context.Context) Result {
 		}
 	}
 	for _, ip := range ips {
-		if fakeIPNet.Contains(ip) {
+		if !fakeIPNet.Contains(ip) {
+			continue
+		}
+		if upstreamViaProxy(t.ProxyURL) {
+			// Pass, not Warn: nothing on the upstream path is wrong, and a
+			// standing Warn on a correct setup is how the next real one gets
+			// skimmed. The reason leads the line, ahead of the panel's cut, so
+			// the operator reading "fake-ip" also reads why it does not matter.
+			// proxy-url is named, not printed: it can carry credentials.
 			return Result{
-				Level: Warn,
-				Detail: fmt.Sprintf(i18n.T("%s 解析为 %s，属于 RFC 2544 保留段（198.18.0.0/15）", "%s resolves to %s, inside the RFC 2544 reserved range (198.18.0.0/15)"),
-					host, ip),
-				Remedy: i18n.T(
-					"本机代理软件在用 fake-ip 劫持 DNS。请求会经由该代理，长连接可能不稳；在代理规则中让 api.anthropic.com 直连可消除这一层",
-					"a local proxy is hijacking DNS via fake-ip. Requests go through that proxy and long-lived connections may be unstable; excluding api.anthropic.com in the proxy rules removes this layer"),
+				Level: Pass,
+				Detail: fmt.Sprintf(i18n.T("fake-ip（%s）无影响：上游经 proxy-url 发出，%s 由代理自行解析",
+					"fake-ip (%s) is harmless: upstream goes via proxy-url, which resolves %s itself"), ip, host),
 			}
+		}
+		return Result{
+			Level: Warn,
+			Detail: fmt.Sprintf(i18n.T("%s 解析为 %s，属于 RFC 2544 保留段（198.18.0.0/15）", "%s resolves to %s, inside the RFC 2544 reserved range (198.18.0.0/15)"),
+				host, ip),
+			// Without proxy-url slimproxy dials the synthetic address, so the
+			// local proxy's rule for the name picks the exit. The action comes
+			// first because the panel truncates this line; the consequence after
+			// it is the reason a direct rule is not an acceptable exit.
+			Remedy: i18n.T(
+				"在代理规则中让 api.anthropic.com 走 Anthropic 服务地区的节点；出口不在服务地区会被 403，该凭据的模型随之停用 30 分钟",
+				"route api.anthropic.com through a node in a region Anthropic serves; an exit outside those regions gets 403, which suspends the credential's model for 30 minutes"),
 		}
 	}
 	return Result{Level: Pass, Detail: fmt.Sprintf(i18n.T("%s 解析到真实地址（%s）", "%s resolves to a real address (%s)"), host, ips[0])}
