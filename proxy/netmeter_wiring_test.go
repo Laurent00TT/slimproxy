@@ -34,6 +34,7 @@ import (
 	cliproxyusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 
+	"github.com/Laurent00TT/slimproxy/journal"
 	"github.com/Laurent00TT/slimproxy/metrics"
 )
 
@@ -53,6 +54,10 @@ func TestNetTimingsSurviveForkContextHop(t *testing.T) {
 	nt := metrics.NewNetTimings(t0)
 	nt.MarkBodyDone(t0.Add(300 * time.Millisecond))
 	nt.AddWriteBlock(40 * time.Millisecond)
+	// 1.5 MiB + 700 bytes: the odd tail makes a rounding-up projection
+	// visible as 1537 instead of 1536.
+	const bodyBytes = 1536*1024 + 700
+	nt.AddBodyBytes(bodyBytes)
 	c.Request = req.WithContext(metrics.WithNetTimings(req.Context(), nt))
 
 	// The fork's real function, called the way the dialect handlers call it:
@@ -82,6 +87,16 @@ func TestNetTimingsSurviveForkContextHop(t *testing.T) {
 			t.Fatalf("执行 ctx 丢掉了请求 ctx 的值链：Upload=%v WriteBlock=%v（want 300ms/40ms）——"+
 				"fork 的 GetContextWithCancel 重挂补丁（SLIMPROXY_PATCHES.md）可能被升级冲掉了",
 				s.Upload, s.WriteBlock)
+		}
+		// The byte count rides the same ctx value, so a severed hop loses it
+		// too -- but it is also a separate copy in HandleUsage, which can be
+		// dropped while the timings survive. Checked through to the journal
+		// field, since in_kb on disk is what an operator reads.
+		if s.BodyBytes != bodyBytes {
+			t.Fatalf("入站字节没随执行 ctx 到达 collector：BodyBytes=%d（want %d）", s.BodyBytes, bodyBytes)
+		}
+		if kb := journal.FromSample(s).InKB; kb != 1536 {
+			t.Fatalf("in_kb = %d, want 1536（整 KiB 向下取整）", kb)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("usage manager 5s 内没有派发记录")

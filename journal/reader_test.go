@@ -185,3 +185,34 @@ func TestSummariseAveragesNetLegs(t *testing.T) {
 		t.Fatalf("AvgWriteBlockMs = %d, want 30", s.AvgWriteBlockMs)
 	}
 }
+
+// TestSummariseUploadThroughput: the rate covers only rows carrying both
+// in_kb and an upload leg of at least MinRatedUploadMs, and is total bytes
+// over total time. Each excluded row below would move the figure if it
+// leaked in, and the two rated rows are chosen so a mean of per-row rates
+// (1152 KB/s) differs from the ratio of sums (614.4 KB/s).
+func TestSummariseUploadThroughput(t *testing.T) {
+	ok := true
+	s := Summarise([]Event{
+		{Kind: KindRequest, OK: &ok, InKB: 2048, UploadMs: 1000},                 // 计入：2048KB/s
+		{Kind: KindRequest, OK: &ok, InKB: 1024, UploadMs: 4000},                 // 计入：256KB/s
+		{Kind: KindRequest, OK: &ok, UploadMs: 5000},                             // in_kb 之前的旧行：有时长无字节
+		{Kind: KindRequest, OK: &ok, InKB: 4096},                                 // 有字节无上传腿（亚毫秒）
+		{Kind: KindRequest, OK: &ok, InKB: 2048, UploadMs: MinRatedUploadMs - 1}, // 腿太短，量的是内存
+		{Kind: KindRequest, OK: &ok},                                             // 两者皆无
+	})
+	if s.UploadRated != 2 {
+		t.Fatalf("UploadRated = %d, want 2", s.UploadRated)
+	}
+	if want := 3072.0 * 1000 / 5000; s.UploadKBps != want {
+		t.Fatalf("UploadKBps = %v, want %v（总字节÷总上传时长）", s.UploadKBps, want)
+	}
+
+	none := Summarise([]Event{
+		{Kind: KindRequest, OK: &ok, UploadMs: 5000},
+		{Kind: KindRequest, OK: &ok, InKB: 4096},
+	})
+	if none.UploadRated != 0 || none.UploadKBps != 0 {
+		t.Fatalf("没有可计的行却给出了吞吐：rated=%d kbps=%v", none.UploadRated, none.UploadKBps)
+	}
+}

@@ -156,6 +156,15 @@ func writeJournalSummary(cx *cliContext, s journal.Summary, since time.Duration)
 	if s.AvgUploadMs > 0 || s.AvgWriteBlockMs > 0 {
 		fmt.Fprintf(cx.stdout, i18n.T("  网络 上传均值 %s，回写阻塞均值 %s\n", "  network: avg upload %s, avg write-block %s\n"), msOrDash(s.AvgUploadMs), msOrDash(s.AvgWriteBlockMs))
 	}
+	// The coverage is printed with the figure because it is a subset: rows
+	// without a size, or whose upload was too short to be the link talking,
+	// are left out, and a bare rate would read as describing every request.
+	if s.UploadRated > 0 {
+		fmt.Fprintf(cx.stdout, i18n.T(
+			"  上传吞吐 %s（%d/%d 个请求：只计记有入站字节且上传腿 ≥%dms 的，总字节÷总上传时长）\n",
+			"  upload throughput %s (%d of %d requests: only those with a body size and an upload leg ≥%dms; total bytes ÷ total upload time)\n"),
+			kbRate(s.UploadKBps), s.UploadRated, s.Requests, journal.MinRatedUploadMs)
+	}
 	// The cache verdict, stated rather than left to be computed from two
 	// columns. On a subscription this is what decides whether a long
 	// conversation costs what it should.
@@ -212,10 +221,20 @@ func requestStatus(e journal.Event) string {
 
 // netCell renders the two net legs, or a dash when the event predates the
 // meter. The upstream leg is not repeated here -- it is the 总时长 column.
+//
+// The body size rides on the upload leg (传1.4s·2.0MB) because the pair is
+// the rate: 5s of upload is 60KB/s for a 300KB body and 1MB/s for a 5MB one.
+// Rows written before in_kb existed render exactly as they always did; a size
+// with no leg (sub-ms upload) keeps the leg's dash rather than dropping the
+// size.
 func netCell(e journal.Event) string {
 	var parts []string
-	if e.UploadMs > 0 {
-		parts = append(parts, i18n.T("传", "up ")+msOrDash(e.UploadMs))
+	if e.UploadMs > 0 || e.InKB > 0 {
+		up := i18n.T("传", "up ") + msOrDash(e.UploadMs)
+		if e.InKB > 0 {
+			up += "·" + kbSize(e.InKB)
+		}
+		parts = append(parts, up)
 	}
 	if e.WriteBlockMs > 0 {
 		parts = append(parts, i18n.T("写", "wr ")+msOrDash(e.WriteBlockMs))
@@ -363,6 +382,28 @@ func msOrDash(ms int64) string {
 		return fmt.Sprintf("%dms", ms)
 	}
 	return fmt.Sprintf("%.1fs", float64(ms)/1000)
+}
+
+// kbSize renders a whole-KiB size, switching to MB where KB digits stop being
+// readable at a glance.
+func kbSize(kb int64) string {
+	if kb < 1024 {
+		return fmt.Sprintf("%dKB", kb)
+	}
+	return fmt.Sprintf("%.1fMB", float64(kb)/1024)
+}
+
+// kbRate renders a KiB/s throughput. Under 1 KB/s it says so instead of
+// printing "0KB/s", which would read as no upload at all.
+func kbRate(kbps float64) string {
+	switch {
+	case kbps >= 1024:
+		return fmt.Sprintf("%.1fMB/s", kbps/1024)
+	case kbps >= 1:
+		return fmt.Sprintf("%.0fKB/s", kbps)
+	default:
+		return "<1KB/s"
+	}
 }
 
 func dashIfEmpty(s string) string {

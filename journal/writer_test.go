@@ -209,3 +209,41 @@ func TestFromSampleProjectsNetLegs(t *testing.T) {
 		t.Fatalf("sub-ms UploadMs = %d, want 0", e.UploadMs)
 	}
 }
+
+// in_kb：整 KiB 向下取整（进位会声称 meter 没见过的字节），亚 KiB 与未测量
+// 一样缺席；落盘后键名就是 in_kb，旧行没有它、读回来是 0。
+func TestFromSampleProjectsInboundKB(t *testing.T) {
+	e := FromSample(metrics.Sample{Model: "claude-x", BodyBytes: 2*1024*1024 + 1023})
+	if e.InKB != 2048 {
+		t.Fatalf("InKB = %d, want 2048（向下取整）", e.InKB)
+	}
+	line, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(line), `"in_kb":2048`) {
+		t.Fatalf("落盘行缺 in_kb：%s", line)
+	}
+
+	for _, s := range []metrics.Sample{
+		{Model: "claude-x", BodyBytes: 1023}, // 亚 KiB
+		{Model: "claude-x"},                  // 没经过 meter
+	} {
+		e := FromSample(s)
+		if e.InKB != 0 {
+			t.Fatalf("BodyBytes=%d → InKB = %d, want 0", s.BodyBytes, e.InKB)
+		}
+		line, _ := json.Marshal(e)
+		if strings.Contains(string(line), "in_kb") {
+			t.Fatalf("未测量/亚 KiB 的行写出了 in_kb：%s", line)
+		}
+	}
+
+	var old Event
+	if err := json.Unmarshal([]byte(`{"ts":"2026-09-20T10:00:00Z","kind":"req","ok":true,"up_ms":900}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.InKB != 0 || old.UploadMs != 900 {
+		t.Fatalf("旧行读回 InKB=%d UploadMs=%d, want 0/900", old.InKB, old.UploadMs)
+	}
+}

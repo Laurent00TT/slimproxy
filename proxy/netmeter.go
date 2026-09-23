@@ -11,7 +11,9 @@ package proxy
 // upload leg, and cumulative time spent inside client writes is the only form
 // of return-path pressure that stays measurable while the stream is pipelined
 // ("upstream done -> client done" is ~0 by construction and would be a field
-// that never fires).
+// that never fires). The body wrapper also counts the bytes the upload leg
+// carried (in_kb): a duration alone cannot say whether 5s of upload was a
+// slow link or a big conversation.
 //
 // Registration order is load-bearing: this must run BEFORE both middlewares
 // that drain the network body and replay it from memory -- FidelityProbe
@@ -51,9 +53,17 @@ func NetMeterMiddleware() gin.HandlerFunc {
 	}
 }
 
-// meterBody marks the timings when the network body reaches EOF. A body the
-// handler never fully reads (abort, reject) simply leaves Upload at 0 --
-// absent, not wrong.
+// meterBody marks the timings when the network body reaches EOF, and counts
+// every byte it hands up on the way. A body the handler never fully reads
+// (abort, reject) simply leaves Upload at 0 -- absent, not wrong -- while
+// BodyBytes keeps what was read before it was dropped.
+//
+// The registration order above matters to the count as well as the clock. At
+// the network side of both drainers every delivered byte passes here exactly
+// once -- including bytes a drainer consumed and then gave up on
+// (FidelityProbe's read-error path hands the half-drained body on) -- while
+// FidelityProbe's and EarlyFlush's in-memory replays sit above this wrapper,
+// where they cannot be counted a second time.
 type meterBody struct {
 	inner io.ReadCloser
 	nt    *metrics.NetTimings
@@ -61,6 +71,10 @@ type meterBody struct {
 
 func (b *meterBody) Read(p []byte) (int, error) {
 	n, err := b.inner.Read(p)
+	// Counted before the error check: io.Reader may deliver the final bytes
+	// together with EOF (or any error), and dropping them would short the
+	// body by exactly its last chunk.
+	b.nt.AddBodyBytes(n)
 	if err == io.EOF {
 		b.nt.MarkBodyDone(time.Now())
 	}

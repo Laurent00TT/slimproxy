@@ -79,6 +79,10 @@ type Sample struct {
 	// meter. Latency sits between them: body-in, think, body-out.
 	Upload     time.Duration
 	WriteBlock time.Duration
+	// BodyBytes is the inbound request body as the meter counted it off the
+	// network, from the same NetTimings and absent (zero) for the same
+	// reasons. Every request, unlike the fidelity probe's sampled size.
+	BodyBytes int64
 
 	// Auth identifies the credential that served this request.
 	//
@@ -287,6 +291,7 @@ func (c *Collector) HandleUsage(ctx context.Context, r cliproxyusage.Record) {
 		if nt := NetTimingsFrom(ctx); nt != nil {
 			sample.Upload = nt.Upload()
 			sample.WriteBlock = nt.WriteBlock()
+			sample.BodyBytes = nt.BodyBytes()
 		}
 	}
 

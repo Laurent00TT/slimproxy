@@ -305,6 +305,11 @@ func FromSample(s metrics.Sample) Event {
 	if s.WriteBlock > 0 {
 		e.WriteBlockMs = s.WriteBlock.Milliseconds()
 	}
+	if s.BodyBytes > 0 {
+		// Truncated like the ms fields above: rounding up would claim bytes
+		// the meter never saw.
+		e.InKB = s.BodyBytes / 1024
+	}
 	if s.HasQuota() {
 		e.Quota5h = f64Ptr(s.Quota5h)
 	}

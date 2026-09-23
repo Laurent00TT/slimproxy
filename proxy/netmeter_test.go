@@ -201,6 +201,125 @@ func TestNetMeterSurvivesHandlerPanic(t *testing.T) {
 	}
 }
 
+// trickleReader 每次最多吐 max 字节（短读），最后一块与 io.EOF 一起返回——
+// io.Reader 契约允许、真实网络 body 也会这么做，计数若只认 err==nil 的读就会
+// 少掉末块。
+type trickleReader struct {
+	data []byte
+	max  int
+}
+
+func (r *trickleReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p[:min(len(p), r.max)], r.data)
+	r.data = r.data[n:]
+	if len(r.data) == 0 {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// in_kb 的分子：meterBody 必须恰好数出送达的字节——短读按实际 n 计（不是
+// len(p)），与 EOF 同来的末块也计。
+func TestMeterBodyCountsDeliveredBytes(t *testing.T) {
+	body := []byte(strings.Repeat("0123456789", 100) + "xy") // 1002 = 334×3，末块 3 字节随 EOF 到
+	nt := metrics.NewNetTimings(time.Now())
+	b := &meterBody{inner: io.NopCloser(&trickleReader{data: body, max: 3}), nt: nt}
+
+	buf := make([]byte, 64) // 远大于每次送达量：len(p) 计数会多算 20 倍
+	var got int
+	for {
+		n, err := b.Read(buf)
+		got += n
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+	}
+	if got != len(body) {
+		t.Fatalf("测试桩自身送达 %d 字节，want %d", got, len(body))
+	}
+	if n := nt.BodyBytes(); n != int64(len(body)) {
+		t.Fatalf("BodyBytes = %d, want %d（送达的每一个字节，不多不少）", n, len(body))
+	}
+	if nt.Upload() == 0 {
+		t.Fatal("读到 EOF 却没记上传腿")
+	}
+}
+
+// 读到一半就被丢下的 body（中止、拒绝）：计数保留已读部分，上传腿缺席——
+// 字节是真的送达了，时长却没有终点，两者各报各的，不互相代填。
+func TestMeterBodyCountsAbandonedBody(t *testing.T) {
+	body := []byte(strings.Repeat("z", 1000))
+	nt := metrics.NewNetTimings(time.Now())
+	b := &meterBody{inner: io.NopCloser(&trickleReader{data: body, max: 3}), nt: nt}
+
+	buf := make([]byte, 64)
+	var got int
+	for i := 0; i < 5; i++ {
+		n, err := b.Read(buf)
+		if err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+		got += n
+	}
+	_ = b.Close()
+
+	if got != 15 {
+		t.Fatalf("测试桩自身送达 %d 字节，want 15", got)
+	}
+	if n := nt.BodyBytes(); n != 15 {
+		t.Fatalf("abandoned BodyBytes = %d, want 15（已读的部分）", n)
+	}
+	if nt.Upload() != 0 {
+		t.Fatalf("没到 EOF 的 body 记了上传腿 %v，want 0", nt.Upload())
+	}
+}
+
+// 两个抽干者都在 meter 之上从内存回放 body（fidelity 的 MultiReader 回放、
+// earlyflush 的 bytes.Reader），计数必须仍是网络送达量本身：回放不经过
+// meter，所以不得被数第二遍。body 超过 fidelity 的 2 MiB 读取上限，走的是
+// 「回放前缀 + 继续读网络」那条最容易数重的路。
+func TestNetMeterCountsBodyOnceAcrossDrainers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	jw, err := journal.Open(t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("journal.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = jw.Close() })
+
+	var seen *metrics.NetTimings
+	var handlerGot int
+	r := gin.New()
+	// proxy.go 的相对次序：meter 在两个抽干者之前，earlyflush 最后。
+	r.Use(NetMeterMiddleware(), FidelityProbeMiddleware(jw), EarlyFlushMiddleware(time.Hour, earlyFlushNotes{}))
+	r.POST("/v1/messages", func(c *gin.Context) {
+		b, _ := io.ReadAll(c.Request.Body)
+		handlerGot = len(b)
+		seen = metrics.NetTimingsFrom(c.Request.Context())
+		c.String(200, "{}")
+	})
+
+	body := []byte(`{"stream":false,"pad":"` + strings.Repeat("p", maxFidelityBody+50_000) + `"}`)
+	req := httptest.NewRequest("POST", "/v1/messages", &trickleReader{data: append([]byte(nil), body...), max: 4093})
+	req.ContentLength = int64(len(body))
+	r.ServeHTTP(httptest.NewRecorder(), req)
+
+	if seen == nil {
+		t.Fatal("handler saw no NetTimings")
+	}
+	if handlerGot != len(body) {
+		t.Fatalf("handler 读到 %d 字节，want %d——回放链本身坏了", handlerGot, len(body))
+	}
+	if n := seen.BodyBytes(); n != int64(len(body)) {
+		t.Fatalf("BodyBytes = %d, want %d（网络送达量，回放不得重复计数）", n, len(body))
+	}
+}
+
 // 注册次序的真身在 proxy.go，gin 语义测试锁不住它：有人把 NetMeter 挪回
 // fidelity/earlyflush 之后，上面两条测试照绿。此测直接断言源文件里的注册
 // 顺序（源码级守卫在本仓库有先例：forkcheck 对 go.mod 与补丁文档做同样的
