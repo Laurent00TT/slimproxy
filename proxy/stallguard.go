@@ -116,13 +116,16 @@ var stallGuardMismatchWarnEvery = time.Hour
 // and what the inner executor's reporter publishes then depends on where the
 // cancel lands. Caught blocked on the upstream read, the read error is
 // published as "context canceled" and metrics files the request under
-// CauseCanceled -- the bucket meaning "the operator pressed Ctrl-C",
-// deliberately excluded from health alerting. Caught parked on its channel
-// send, the inner goroutine returns without publishing anything at all. An
-// earlier version of this comment asserted the first outcome unconditionally;
-// the second is the same silent ending the noTail note exists for. Either way
-// a stall would be invisible in `slimproxy log` and would never contribute to
-// a failure streak.
+// CauseCanceled -- the bucket meaning "the operator pressed Ctrl-C". The
+// health tracker skips such a record only when the upstream's first byte had
+// already arrived (metrics.abandonedAfterAnswer), which is the mid-stream
+// stall this guard exists for; one severed before any byte counts toward an
+// unreachable streak like any other canceled wait. Caught parked on its
+// channel send, the inner goroutine returns without publishing anything at
+// all. An earlier version of this comment asserted the first outcome
+// unconditionally; the second is the same silent ending the noTail note
+// exists for. Either way a mid-stream stall would be invisible in
+// `slimproxy log` and would never contribute to a failure streak.
 //
 // That is what notes.stalled exists for: the guard reports itself, rather
 // than hoping a string survives a pipeline it does not control.

@@ -213,8 +213,9 @@ func TestSlowConsumerIsNotAStall(t *testing.T) {
 // passed -- but that string never reaches the usage pipeline. Severing works
 // by cancelling the upstream context, so the inner executor reports its own
 // "context canceled" and the request is filed under CauseCanceled: the bucket
-// for a deliberate Ctrl-C, excluded from health alerting. Stalls would have
-// been invisible in the journal while a green test claimed otherwise.
+// for a deliberate Ctrl-C, which health alerting skips once the first byte
+// has arrived -- as it has in any mid-stream stall. Stalls would have been
+// invisible in the journal while a green test claimed otherwise.
 //
 // So the guard reports itself, and this pins that it does.
 func TestStallIsReportedByTheGuardItself(t *testing.T) {
@@ -233,7 +234,7 @@ func TestStallIsReportedByTheGuardItself(t *testing.T) {
 				reported = append(reported, d)
 				stallMetas = append(stallMetas, m)
 			},
-			noTail: func(stallStreamMeta) { mu.Lock(); noTails++; mu.Unlock() },
+			noTail:     func(stallStreamMeta) { mu.Lock(); noTails++; mu.Unlock() },
 			clientDrop: func(stallStreamMeta, bool) { mu.Lock(); drops++; mu.Unlock() },
 		},
 	}

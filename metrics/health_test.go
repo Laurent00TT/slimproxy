@@ -171,3 +171,73 @@ func TestHealthNilIsUsable(t *testing.T) {
 		t.Error("nil tracker 不该报告 degraded")
 	}
 }
+
+// abandoned is a stream the client canceled after the upstream's first byte
+// had arrived -- the shape of every sample in the three false "上游不可达"
+// runs of 2026-09-23.
+func abandoned() Sample {
+	return Sample{Failed: true, Cause: CauseCanceled, TTFT: 4 * time.Second, At: time.Now()}
+}
+
+// TestHealthAbandonedStreamDoesNotEndARun: a canceled stream proves only that
+// the upstream answered when it started, which may predate the outage. Read as
+// a success it would announce a recovery mid-outage; read as a failure it would
+// lengthen the run with something that was not one.
+func TestHealthAbandonedStreamDoesNotEndARun(t *testing.T) {
+	var got []HealthEvent
+	h := NewHealth(func(ev HealthEvent) { got = append(got, ev) })
+	for _, s := range []Sample{fail(0), fail(0), fail(0), abandoned(), fail(0)} {
+		h.Observe(s)
+	}
+	for _, ev := range got {
+		if !ev.Degraded {
+			t.Fatalf("中途放弃的流不是恢复，却发了恢复事件: %+v", got)
+		}
+	}
+	if len(got) != 1 || got[0].Streak != 3 {
+		t.Errorf("应只在 streak=3 时发一条 degraded，实际 %+v", got)
+	}
+	// 4, not 5: the abandoned stream neither ended the run nor joined it.
+	if st := h.State(); !st.Degraded || st.Class != ClassUnreachable || st.Streak != 4 {
+		t.Errorf("State() = %+v，want degraded、ClassUnreachable、streak=4", st)
+	}
+}
+
+// TestHealthAbandonedStreamsRaiseNoAlarm: a user pressing Esc on streams that
+// were already answering is not the upstream being unreachable, however many
+// times in a row it happens.
+func TestHealthAbandonedStreamsRaiseNoAlarm(t *testing.T) {
+	var samples []Sample
+	for i := 0; i < 10; i++ {
+		samples = append(samples, abandoned())
+	}
+	if got := collect(samples...); len(got) != 0 {
+		t.Errorf("客户端放弃已有首字的流不该告警，却发了 %d 条: %+v", len(got), got)
+	}
+}
+
+// TestHealthCanceledBeforeFirstByteStillCounts: with no first byte there is no
+// evidence the upstream was reachable, and during a real outage a client
+// giving up is exactly what the outage looks like from here.
+func TestHealthCanceledBeforeFirstByteStillCounts(t *testing.T) {
+	gaveUp := Sample{Failed: true, Cause: CauseCanceled, At: time.Now()}
+	got := collect(gaveUp, gaveUp, gaveUp)
+	if len(got) != 1 || !got[0].Degraded || got[0].Class != ClassUnreachable || got[0].Streak != 3 {
+		t.Errorf("未等到首字就取消应照常计为不可达，want 一条 streak=3 的 degraded，实际 %+v", got)
+	}
+}
+
+// TestHealthMidStreamBreakStillCounts: a first byte excuses only the client
+// walking away. A stream the route broke after it had started -- reset, EOF, a
+// read deadline -- is the path failing, and skipping every transport failure
+// that carries a TTFT would take mid-stream disconnects out of the alarm while
+// the canceled-only tests above stayed green.
+func TestHealthMidStreamBreakStillCounts(t *testing.T) {
+	for _, cause := range []Cause{CauseConnect, CauseTimeout, CauseOther} {
+		broke := Sample{Failed: true, Cause: cause, TTFT: 4 * time.Second, At: time.Now()}
+		got := collect(broke, broke, broke)
+		if len(got) != 1 || !got[0].Degraded || got[0].Class != ClassUnreachable || got[0].Streak != 3 {
+			t.Errorf("cause=%s 且已有首字的中途断流应照常计为不可达，want 一条 streak=3 的 degraded，实际 %+v", cause, got)
+		}
+	}
+}
