@@ -148,6 +148,9 @@ func writeJournalSummary(cx *cliContext, s journal.Summary, since time.Duration)
 		}
 		fmt.Fprintf(cx.stdout, "（%s）", strings.Join(parts, " "))
 	}
+	if s.Canceled > 0 {
+		fmt.Fprintf(cx.stdout, i18n.T("，%d 个客户端取消", ", %d canceled by the client"), s.Canceled)
+	}
 	fmt.Fprintln(cx.stdout)
 
 	if s.P50Ms > 0 {
@@ -166,7 +169,7 @@ func writeJournalSummary(cx *cliContext, s journal.Summary, since time.Duration)
 			fmt.Fprintf(cx.stdout, i18n.T("，新建 %s", ", %s written"), compactTokens(s.CacheCreation))
 		}
 		if s.CacheMissed > 0 {
-			fmt.Fprintf(cx.stdout, i18n.T("；%d 个请求带 cache_control 但没有命中", "; %d requests carried cache_control and hit nothing"), s.CacheMissed)
+			fmt.Fprintf(cx.stdout, i18n.T("；成功请求中 %d 个未读写缓存", "; %d successful requests neither read nor wrote cache"), s.CacheMissed)
 		}
 		fmt.Fprintln(cx.stdout)
 	case s.CacheWanted > 0:

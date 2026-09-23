@@ -45,7 +45,9 @@ func (c FailureClass) String() string {
 //
 // Status is zero when a failure carried no HTTP code, which is precisely the
 // transport-layer case -- see Sample.Status. In three days of real traffic 108
-// of 110 failures landed here, all of them dial timeouts.
+// of 110 failures landed here, all of them dial timeouts. A client cancellation
+// also carries no status; the ones that came after the upstream had answered
+// never get here -- see abandonedAfterAnswer.
 func classify(s Sample) FailureClass {
 	if !s.Failed {
 		return ClassNone
@@ -148,9 +150,30 @@ func NewHealth(notify func(HealthEvent)) *Health {
 	return &Health{notify: notify}
 }
 
+// abandonedAfterAnswer reports a request the client canceled after the
+// upstream had already sent its first byte.
+//
+// Such a sample says nothing about the upstream's health either way, so Observe
+// skips it rather than classifying it. It is not unreachable: the first byte
+// arrived, which classify's Status==0 rule cannot see -- and on 2026-09-23 that
+// blindness turned three bursts of abandoned streams (every one with a first
+// byte at 3-11s) into "上游不可达" alerts and matching all-clears. Nor is it a
+// success: a record is published when a request ends, not when it begins, so
+// a stream that got its first token before an outage and was abandoned during
+// it proves only that the upstream was reachable back then. Read as ClassNone
+// it would end the run and announce a recovery in the middle of the outage.
+//
+// A cancellation with no first byte keeps counting as unreachable. During a
+// real outage a client that gives up waiting is the outage's symptom, and
+// skipping those too would let a dead upstream plus an impatient user read as
+// silence.
+func abandonedAfterAnswer(s Sample) bool {
+	return s.Cause == CauseCanceled && s.TTFT > 0
+}
+
 // Observe folds one completed request into the current state.
 func (h *Health) Observe(s Sample) {
-	if h == nil {
+	if h == nil || abandonedAfterAnswer(s) {
 		return
 	}
 	class := classify(s)

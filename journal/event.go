@@ -206,6 +206,12 @@ const (
 // Failed reports whether a request event represents a failure.
 func (e Event) Failed() bool { return e.Kind == KindRequest && e.OK != nil && !*e.OK }
 
+// Canceled reports a failure that was the client going away rather than the
+// upstream or the path to it breaking. A subset of Failed, not an alternative
+// to it: the row is still a request that did not complete, so -failed keeps
+// listing it and only the summary counts it apart.
+func (e Event) Canceled() bool { return e.Failed() && e.Cause == metrics.CauseCanceled }
+
 // Noise reports whether an event is inbound traffic this deployment did not ask
 // for.
 //

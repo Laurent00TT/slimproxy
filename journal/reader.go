@@ -229,7 +229,16 @@ func scanDay(path string, q Query, push func(Event)) error {
 // Summary aggregates a result set.
 type Summary struct {
 	Requests int
+	// Failed and ByStatus leave out client cancellations, which Canceled
+	// counts instead.
+	//
+	// An Esc press is not the upstream or the route breaking, and summed into
+	// the failure count (40 of 143 on 2026-09-23) it inflates the one number
+	// read to decide whether the path is sick. Counted beside it rather than
+	// dropped: during an outage a client that gives up waiting is a symptom,
+	// and the count sitting next to the failures is what shows it.
 	Failed   int
+	Canceled int
 	Rejects  int
 	// Noise counts refused outside traffic among the events that were listed.
 	Noise int
@@ -266,13 +275,18 @@ type Summary struct {
 	CacheRead     int64
 	CacheCreation int64
 	// CacheWanted counts inbound requests that carried cache_control markers,
-	// and CacheMissed how many requests followed one without reading anything
-	// from cache.
+	// and CacheMissed how many successful requests neither read from nor wrote
+	// to the cache.
 	//
 	// The pair is the alarm: markers going in with nothing coming back means
 	// every turn of every conversation is paying full price, which is invisible
 	// in the replies and shows up only as the quota draining several times
 	// faster than it should.
+	//
+	// Successful requests only. A failed request never produced usage, so its
+	// zero cache fields mean "not measured", not "missed" -- counting them made
+	// 2026-09-23 report 148 misses of which 143 were failures, a second failure
+	// count wearing a cache label.
 	CacheWanted int
 	CacheMissed int
 }
@@ -286,7 +300,9 @@ func Summarise(events []Event) Summary {
 		switch e.Kind {
 		case KindRequest:
 			s.Requests++
-			if e.Failed() {
+			if e.Canceled() {
+				s.Canceled++
+			} else if e.Failed() {
 				s.Failed++
 				s.ByStatus[e.Status]++
 			}
@@ -306,7 +322,7 @@ func Summarise(events []Event) Summary {
 			}
 			s.CacheRead += e.CacheRead
 			s.CacheCreation += e.CacheCreation
-			if e.CacheRead == 0 && e.CacheCreation == 0 {
+			if e.OK != nil && *e.OK && e.CacheRead == 0 && e.CacheCreation == 0 {
 				s.CacheMissed++
 			}
 		case KindFidelity:
