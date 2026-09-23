@@ -58,3 +58,22 @@ func TestLogStatsCacheLineSaysWhatItCounts(t *testing.T) {
 		t.Errorf("缓存行不该再声称请求带了 cache_control，实际:\n%s", got)
 	}
 }
+
+// TestLogStatsListsCancellationsWithoutFailures: a quiet day with nothing but
+// Esc presses still names them. Printing the count only beside a failure count
+// would drop it exactly when there are no real failures to sit next to.
+func TestLogStatsListsCancellationsWithoutFailures(t *testing.T) {
+	no, yes := false, true
+	got := renderSummary(t, []journal.Event{
+		{Kind: journal.KindRequest, OK: &no, Cause: metrics.CauseCanceled, TTFTMs: 4000},
+		{Kind: journal.KindRequest, OK: &no, Cause: metrics.CauseCanceled},
+		{Kind: journal.KindRequest, OK: &yes},
+	})
+	want := "3 个请求，2 个客户端取消"
+	if !strings.Contains(got, want) {
+		t.Errorf("汇总行应含 %q，实际:\n%s", want, got)
+	}
+	if strings.Contains(got, "个失败") {
+		t.Errorf("没有真正的失败时不该出现失败计数，实际:\n%s", got)
+	}
+}

@@ -210,6 +210,11 @@ func (e Event) Failed() bool { return e.Kind == KindRequest && e.OK != nil && !*
 // upstream or the path to it breaking. A subset of Failed, not an alternative
 // to it: the row is still a request that did not complete, so -failed keeps
 // listing it and only the summary counts it apart.
+//
+// Not every such row is the client's doing. The stall guard severs a dead
+// stream by canceling its context, and the executor files that cut as
+// "context canceled" too; the row itself cannot tell the two apart, and the
+// guard's own state=stall health row beside it is what does.
 func (e Event) Canceled() bool { return e.Failed() && e.Cause == metrics.CauseCanceled }
 
 // Noise reports whether an event is inbound traffic this deployment did not ask

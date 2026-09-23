@@ -226,3 +226,18 @@ func TestHealthCanceledBeforeFirstByteStillCounts(t *testing.T) {
 		t.Errorf("未等到首字就取消应照常计为不可达，want 一条 streak=3 的 degraded，实际 %+v", got)
 	}
 }
+
+// TestHealthMidStreamBreakStillCounts: a first byte excuses only the client
+// walking away. A stream the route broke after it had started -- reset, EOF, a
+// read deadline -- is the path failing, and skipping every transport failure
+// that carries a TTFT would take mid-stream disconnects out of the alarm while
+// the canceled-only tests above stayed green.
+func TestHealthMidStreamBreakStillCounts(t *testing.T) {
+	for _, cause := range []Cause{CauseConnect, CauseTimeout, CauseOther} {
+		broke := Sample{Failed: true, Cause: cause, TTFT: 4 * time.Second, At: time.Now()}
+		got := collect(broke, broke, broke)
+		if len(got) != 1 || !got[0].Degraded || got[0].Class != ClassUnreachable || got[0].Streak != 3 {
+			t.Errorf("cause=%s 且已有首字的中途断流应照常计为不可达，want 一条 streak=3 的 degraded，实际 %+v", cause, got)
+		}
+	}
+}
