@@ -5,13 +5,16 @@ package helps
 // What is being pinned: the utls round tripper bounds each connection-setup
 // attempt, retries a failed setup a fixed number of times, stops the moment
 // the request's own context ends, and never retries once the request has been
-// handed to a live connection; and, once a connection is up, that nothing of
-// setup's bound is left on it, that a dead one is noticed, and that an idle
-// one is closed. The failures are staged by a fake HTTP CONNECT
-// proxy on loopback -- the same shapes Clash produced in the 2026-09-21..23
-// window: a CONNECT answered 200 and then closed (the ~5.0s EOF inside the
-// handshake), a tunnel that swallows the ClientHello (the ~60s hang), a
-// CONNECT never answered. The proxy is reached through the real
+// handed to a live connection -- neither in the round tripper nor at the
+// front door the executors call; and, once a connection is up, that nothing
+// of setup's bound is left on it, that a dead one is noticed while a silent
+// one that still acks its PINGs is spared, that an idle one is closed at its
+// idle timeout and no sooner, and that the health check's kill of a live
+// request -- and nothing else -- is logged. The failures are staged by a fake
+// HTTP CONNECT proxy on loopback -- the same shapes Clash produced in the
+// 2026-09-21..23 window: a CONNECT answered 200 and then closed (the ~5.0s EOF
+// inside the handshake), a tunnel that swallows the ClientHello (the ~60s
+// hang), a CONNECT never answered. The proxy is reached through the real
 // proxyutil.BuildDialer, so the ctx-aware CONNECT dial is under test as well.
 // The upstream is a local TLS+HTTP/2 httptest server, trusted through the
 // round tripper's rootCAs seam; nothing leaves the machine.
@@ -35,6 +38,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -69,8 +73,9 @@ type setupLogHook struct {
 }
 
 type setupLogLine struct {
-	level log.Level
-	msg   string
+	level     log.Level
+	msg       string
+	requestID string
 }
 
 func (h *setupLogHook) Levels() []log.Level { return log.AllLevels }
@@ -79,8 +84,9 @@ func (h *setupLogHook) Fire(e *log.Entry) error {
 	if !strings.HasPrefix(e.Message, "utls: ") {
 		return nil
 	}
+	requestID, _ := e.Data["request_id"].(string)
 	h.mu.Lock()
-	h.lines = append(h.lines, setupLogLine{level: e.Level, msg: e.Message})
+	h.lines = append(h.lines, setupLogLine{level: e.Level, msg: e.Message, requestID: requestID})
 	h.mu.Unlock()
 	h.onWarnM.Lock()
 	onWarn := h.onWarn
@@ -92,16 +98,27 @@ func (h *setupLogHook) Fire(e *log.Entry) error {
 }
 
 func (h *setupLogHook) matching(level log.Level, substr string) []string {
+	var out []string
+	for _, l := range h.entries(level, substr) {
+		out = append(out, l.msg)
+	}
+	return out
+}
+
+func (h *setupLogHook) entries(level log.Level, substr string) []setupLogLine {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	var out []string
+	var out []setupLogLine
 	for _, l := range h.lines {
 		if l.level == level && strings.Contains(l.msg, substr) {
-			out = append(out, l.msg)
+			out = append(out, l)
 		}
 	}
 	return out
 }
+
+// healthCheckKill is the substring of the line lostPingReporter logs.
+const healthCheckKill = "health check closed the connection"
 
 func (h *setupLogHook) all() string {
 	h.mu.Lock()
@@ -269,6 +286,46 @@ func tunnelTo(target string, frozen *atomic.Bool) func(p *connectProxy, n int, c
 	}
 }
 
+// countedReads counts the reads from r that return data.
+type countedReads struct {
+	r io.Reader
+	n *atomic.Int64
+}
+
+func (c countedReads) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if n > 0 {
+		c.n.Add(1)
+	}
+	return n, err
+}
+
+// slowConn delays each write by d. As the client side of a tunnel, it makes
+// everything the upstream sends -- a PING ack among it -- reach the client d
+// late, as over a path with that much latency; loopback acks otherwise arrive
+// within a millisecond, and no timeout on them could be too short.
+type slowConn struct {
+	net.Conn
+	d time.Duration
+}
+
+func (c slowConn) Write(p []byte) (int, error) {
+	time.Sleep(c.d)
+	return c.Conn.Write(p)
+}
+
+// countingTunnelTo is tunnelTo that counts what the client sends: one per
+// read of the client's side, which on a connection with no request body in
+// flight is one per frame the client flushes -- a PING (or its TLS
+// close_notify) every time. That is how a test sees the health check run: its
+// PINGs are the only thing the client sends while it waits on a response or
+// sits idle.
+func countingTunnelTo(target string, clientWrites *atomic.Int64, clientGone func()) func(p *connectProxy, n int, c net.Conn, br *bufio.Reader) {
+	return func(p *connectProxy, _ int, c net.Conn, br *bufio.Reader) {
+		p.tunnel(c, bufio.NewReader(countedReads{br, clientWrites}), target, nil, clientGone)
+	}
+}
+
 // newH2Upstream starts a TLS+HTTP/2 server standing in for the upstream and
 // returns its address and a pool that trusts it. Its certificate names
 // example.com, the host every test request is addressed to; the proxy
@@ -345,6 +402,30 @@ func returnWithin[T any](t *testing.T, limit time.Duration, f func() (T, error))
 func roundTripWithin(t *testing.T, rt *utlsRoundTripper, req *http.Request, limit time.Duration) (*http.Response, error) {
 	t.Helper()
 	return returnWithin(t, limit, func() (*http.Response, error) { return rt.RoundTrip(req) })
+}
+
+// fallbackMustNotRun stands in for the fallback transport where a request
+// must take the utls path.
+type fallbackMustNotRun struct{ t *testing.T }
+
+func (f fallbackMustNotRun) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.t.Errorf("request to %s took the fallback transport, not utls", r.URL.Host)
+	return nil, errors.New("test: fallback transport called")
+}
+
+// frontDoorClient puts rt behind what the executors actually call: an
+// http.Client over a fallbackRoundTripper, as NewUtlsHTTPClient builds it.
+// example.com, the test requests' host, is made a protected host for the
+// test, so they take the utls path as api.anthropic.com's do; one that
+// reaches the fallback transport fails the test.
+func frontDoorClient(t *testing.T, rt http.RoundTripper) *http.Client {
+	t.Helper()
+	const host = "example.com"
+	if _, ok := utlsProtectedHosts[host]; !ok {
+		utlsProtectedHosts[host] = struct{}{}
+		t.Cleanup(func() { delete(utlsProtectedHosts, host) })
+	}
+	return &http.Client{Transport: &fallbackRoundTripper{utls: rt, fallback: fallbackMustNotRun{t}}}
 }
 
 // Each setup attempt is cut at connectAttemptTimeout and the request gives up
@@ -555,6 +636,12 @@ func TestUtlsSetupStopsWhenRequestEndsDuringBackoff(t *testing.T) {
 // what a node dying mid-request looks like, surface as connection errors
 // rather than stream errors, and are the likeliest to be "helpfully" retried
 // by error type.
+//
+// Each case is sent twice: to the round tripper itself, and through the
+// front door -- the http.Client over fallbackRoundTripper that the executors
+// get -- so a resend added above RoundTrip (in fallbackRoundTripper, say,
+// replaying the body through GetBody) is caught as well as one added inside
+// it.
 func TestUtlsRequestErrorAfterSetupIsNotRetried(t *testing.T) {
 	cases := []struct {
 		name string
@@ -571,64 +658,80 @@ func TestUtlsRequestErrorAfterSetupIsNotRetried(t *testing.T) {
 			frozen.Store(true)
 		}},
 	}
+	fronts := []struct {
+		name string
+		send func(t *testing.T, rt *utlsRoundTripper, req *http.Request) (*http.Response, error)
+	}{
+		{"round tripper", func(_ *testing.T, rt *utlsRoundTripper, req *http.Request) (*http.Response, error) {
+			return rt.RoundTrip(req)
+		}},
+		{"client", func(t *testing.T, rt *utlsRoundTripper, req *http.Request) (*http.Response, error) {
+			return frontDoorClient(t, rt).Do(req)
+		}},
+	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			setSetupTimings(t, 3, 2*time.Second, []time.Duration{10 * time.Millisecond, 20 * time.Millisecond})
-			// The silent path is noticed by the health check, ~400ms in.
-			setH2Timings(t, 200*time.Millisecond, 200*time.Millisecond, h2IdleConnTimeout)
-			captureSetupLogs(t)
-			var hits atomic.Int32
-			arrived := make(chan struct{})
-			upstream, roots := newH2Upstream(t, func(w http.ResponseWriter, r *http.Request) {
-				n := hits.Add(1)
-				_, _ = io.Copy(io.Discard, r.Body)
-				if n > 1 {
-					_, _ = io.WriteString(w, "ok")
-					return
-				}
-				close(arrived)
-				if tc.upstreamResets {
-					// RST_STREAM, after the whole request arrived.
-					panic(http.ErrAbortHandler)
-				}
-				<-r.Context().Done()
-			})
-			testDone := t.Context()
-			p := newConnectProxy(t, func(p *connectProxy, n int, c net.Conn, br *bufio.Reader) {
-				if n > 1 || tc.onArrival == nil {
-					p.tunnel(c, br, upstream, nil, nil)
-					return
-				}
-				var frozen atomic.Bool
-				go func() {
-					select {
-					case <-arrived:
-						tc.onArrival(c, &frozen)
-					case <-testDone.Done():
+		for _, front := range fronts {
+			t.Run(tc.name+" via "+front.name, func(t *testing.T) {
+				setSetupTimings(t, 3, 2*time.Second, []time.Duration{10 * time.Millisecond, 20 * time.Millisecond})
+				// The silent path is noticed by the health check, ~400ms in.
+				setH2Timings(t, 200*time.Millisecond, 200*time.Millisecond, h2IdleConnTimeout)
+				captureSetupLogs(t)
+				var hits atomic.Int32
+				arrived := make(chan struct{})
+				upstream, roots := newH2Upstream(t, func(w http.ResponseWriter, r *http.Request) {
+					n := hits.Add(1)
+					_, _ = io.Copy(io.Discard, r.Body)
+					if n > 1 {
+						_, _ = io.WriteString(w, "ok")
+						return
 					}
-				}()
-				p.tunnel(c, br, upstream, &frozen, nil)
-			})
-			rt := newTestRoundTripper(t, p, roots)
+					close(arrived)
+					if tc.upstreamResets {
+						// RST_STREAM, after the whole request arrived.
+						panic(http.ErrAbortHandler)
+					}
+					<-r.Context().Done()
+				})
+				testDone := t.Context()
+				p := newConnectProxy(t, func(p *connectProxy, n int, c net.Conn, br *bufio.Reader) {
+					if n > 1 || tc.onArrival == nil {
+						p.tunnel(c, br, upstream, nil, nil)
+						return
+					}
+					var frozen atomic.Bool
+					go func() {
+						select {
+						case <-arrived:
+							tc.onArrival(c, &frozen)
+						case <-testDone.Done():
+						}
+					}()
+					p.tunnel(c, br, upstream, &frozen, nil)
+				})
+				rt := newTestRoundTripper(t, p, roots)
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			resp, err := roundTripWithin(t, rt, newTestRequest(t, ctx, bytes.Repeat([]byte("x"), 64<<10)), 15*time.Second)
-			if resp != nil {
-				_ = resp.Body.Close()
-			}
-			if err == nil {
-				t.Error("the failed request came back as a response: it was sent again")
-			} else if ctx.Err() != nil {
-				t.Fatalf("the 10s watchdog ended the request (err %v): the failure was never noticed", err)
-			}
-			if got := hits.Load(); got != 1 {
-				t.Errorf("upstream saw the request %d times, want exactly 1", got)
-			}
-			if got := p.accepted.Load(); got != 1 {
-				t.Errorf("proxy saw %d connections, want 1: an error after setup must not start another", got)
-			}
-		})
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				// A body with GetBody, as every executor request has: what a
+				// resend would replay.
+				req := newTestRequest(t, ctx, bytes.Repeat([]byte("x"), 64<<10))
+				resp, err := returnWithin(t, 15*time.Second, func() (*http.Response, error) { return front.send(t, rt, req) })
+				if resp != nil {
+					_ = resp.Body.Close()
+				}
+				if err == nil {
+					t.Error("the failed request came back as a response: it was sent again")
+				} else if ctx.Err() != nil {
+					t.Fatalf("the 10s watchdog ended the request (err %v): the failure was never noticed", err)
+				}
+				if got := hits.Load(); got != 1 {
+					t.Errorf("upstream saw the request %d times, want exactly 1", got)
+				}
+				if got := p.accepted.Load(); got != 1 {
+					t.Errorf("proxy saw %d connections, want 1: an error after setup must not start another", got)
+				}
+			})
+		}
 	}
 }
 
@@ -735,9 +838,13 @@ func TestUtlsSetupWaitersFollowTheirOwnContext(t *testing.T) {
 // A connection that dies silently mid-response -- no FIN, no RST, just no
 // more bytes, as when a node vanishes behind the proxy -- is detected by the
 // HTTP/2 PING health check and fails the body read, instead of hanging it.
+// The kill is logged once, as the request's own warning: it is the only
+// record that the health check, rather than a reset or an EOF from the path,
+// ended the request.
 func TestUtlsConnectionDetectsSilentDeathMidResponse(t *testing.T) {
-	setH2Timings(t, 200*time.Millisecond, 200*time.Millisecond, h2IdleConnTimeout)
-	captureSetupLogs(t)
+	const readIdle = 200 * time.Millisecond
+	setH2Timings(t, readIdle, 200*time.Millisecond, h2IdleConnTimeout)
+	logs := captureSetupLogs(t)
 
 	upstream, roots := newH2Upstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -749,7 +856,8 @@ func TestUtlsConnectionDetectsSilentDeathMidResponse(t *testing.T) {
 	p := newConnectProxy(t, tunnelTo(upstream, &frozen))
 	rt := newTestRoundTripper(t, p, roots)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	const requestID = "req-silent-death"
+	ctx, cancel := context.WithTimeout(logging.WithRequestID(context.Background(), requestID), 5*time.Second)
 	defer cancel()
 	resp, err := roundTripWithin(t, rt, newTestRequest(t, ctx, []byte("{}")), 8*time.Second)
 	if err != nil {
@@ -774,6 +882,202 @@ func TestUtlsConnectionDetectsSilentDeathMidResponse(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Errorf("dead connection detected after %v; PING health check should take ~400ms", elapsed)
 	}
+
+	// The readLoop's PING timer outlives the connection and reports a second
+	// lost PING a ReadIdleTimeout after the close, with no stream left on it.
+	// Wait it out: only the kill may be logged.
+	time.Sleep(3 * readIdle)
+	kills := logs.entries(log.WarnLevel, healthCheckKill)
+	if len(kills) != 1 {
+		t.Fatalf("%d health-check kill warnings, want exactly 1; log:\n%s", len(kills), logs.all())
+	}
+	if msg := kills[0].msg; !strings.Contains(msg, "example.com:443") || !strings.Contains(msg, "with 1 active stream") {
+		t.Errorf("warning %q does not name the connection's address and its one open stream", msg)
+	}
+	if kills[0].requestID != requestID {
+		t.Errorf("warning carries request_id %q, want %q: it must go through the request's logger", kills[0].requestID, requestID)
+	}
+}
+
+// The other side of the health check: a live connection whose upstream says
+// nothing for many ReadIdleTimeouts -- a long pause before the next event --
+// is PINGed all through the silence, acks every PING, and keeps its response.
+// Killing a connection that answers is the one way the check can hurt live
+// traffic: a check that closed on its first PING, or waited less than a round
+// trip for the ack, would cut every response at its first pause. The path
+// here adds 50ms on the way back, so each ack takes a real round trip; one
+// through Clash and the node takes longer still. The silence
+// outlasts ReadIdleTimeout + PingTimeout, so a check that took an ack for
+// nothing and waited for data instead would fire inside it too. The count of
+// what the client sent during the silence proves the check ran all along.
+func TestUtlsHealthCheckSparesSilentLiveResponse(t *testing.T) {
+	const readIdle = 100 * time.Millisecond
+	const silence = 15 * readIdle
+	const pathLatency = 50 * time.Millisecond
+	setSetupTimings(t, 1, 2*time.Second, nil)
+	setH2Timings(t, readIdle, time.Second, h2IdleConnTimeout)
+	logs := captureSetupLogs(t)
+	var clientWrites, writesDuringSilence atomic.Int64
+	upstream, roots := newH2Upstream(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = io.WriteString(w, "a")
+		w.(http.Flusher).Flush()
+		before := clientWrites.Load()
+		time.Sleep(silence)
+		writesDuringSilence.Store(clientWrites.Load() - before)
+		_, _ = io.WriteString(w, "b")
+	})
+	p := newConnectProxy(t, func(p *connectProxy, n int, c net.Conn, br *bufio.Reader) {
+		countingTunnelTo(upstream, &clientWrites, nil)(p, n, slowConn{c, pathLatency}, br)
+	})
+	rt := newTestRoundTripper(t, p, roots)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	resp, err := roundTripWithin(t, rt, newTestRequest(t, ctx, []byte("{}")), 10*time.Second)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := returnWithin(t, 10*time.Second, func() ([]byte, error) { return io.ReadAll(resp.Body) })
+	if err != nil || string(body) != "ab" {
+		t.Fatalf("read %q, %v; want \"ab\" and no error: the health check closed a connection that was acking its PINGs", body, err)
+	}
+	if n := writesDuringSilence.Load(); n < 5 {
+		t.Errorf("the client sent %d frames during the %v silence, want a PING every ~%v: "+
+			"the health check did not run, so nothing here was tested", n, silence, readIdle)
+	}
+	if kills := logs.matching(log.WarnLevel, healthCheckKill); len(kills) != 0 {
+		t.Errorf("health-check kill logged for a live connection: %q", kills)
+	}
+}
+
+// slowCloseBody is a request body whose Close takes d. The HTTP/2 client
+// closes a request's body before it lets go of the request's stream, so an
+// ended request keeps counting as an open stream for d after its connection
+// has closed. With a plain body that window is microseconds wide, and a
+// lost-PING report lands in it only some of the time.
+type slowCloseBody struct {
+	io.Reader
+	d time.Duration
+}
+
+func (b slowCloseBody) Close() error {
+	time.Sleep(b.d)
+	return nil
+}
+
+// The health check's warning is for the check cutting a request, and nothing
+// else. The client reports a failed PING in two more shapes, and neither may
+// raise it. In one, the check closes a connection whose path died while it
+// carried no request, which hurt nothing. In the other, the peer hangs up
+// while a PING awaits its ack, so the check cut nothing, although the request
+// the hang-up ended still counts as an open stream when the PING fails. The
+// idle leftover's report, after its close, is covered by
+// TestUtlsIdleConnectionIsClosed.
+func TestUtlsHealthCheckWarnsOnlyWhenItCutsARequest(t *testing.T) {
+	const readIdle = 100 * time.Millisecond
+
+	t.Run("idle connection whose path dies", func(t *testing.T) {
+		setSetupTimings(t, 1, 2*time.Second, nil)
+		// The idle timeout is far off: if the client hangs up, the check
+		// closed the connection.
+		setH2Timings(t, readIdle, 200*time.Millisecond, 30*time.Second)
+		logs := captureSetupLogs(t)
+		upstream, roots := newH2Upstream(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			_, _ = io.WriteString(w, "ok")
+		})
+		var frozen atomic.Bool
+		clientGone := make(chan struct{})
+		var goneOnce sync.Once
+		p := newConnectProxy(t, func(p *connectProxy, _ int, c net.Conn, br *bufio.Reader) {
+			p.tunnel(c, br, upstream, &frozen, func() { goneOnce.Do(func() { close(clientGone) }) })
+		})
+		rt := newTestRoundTripper(t, p, roots)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		resp, err := roundTripWithin(t, rt, newTestRequest(t, ctx, []byte("{}")), 8*time.Second)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil || string(body) != "ok" {
+			t.Fatalf("read %q, %v; want \"ok\"", body, err)
+		}
+
+		frozen.Store(true)
+		select {
+		case <-clientGone:
+		case <-time.After(3 * time.Second):
+			t.Fatal("the client kept the connection whose path died: the health check never closed it, so nothing here was tested")
+		}
+		time.Sleep(3 * readIdle)
+		if kills := logs.matching(log.WarnLevel, healthCheckKill); len(kills) != 0 {
+			t.Errorf("the check closing a connection with no request on it was logged as a kill: %q", kills)
+		}
+	})
+
+	t.Run("peer hangs up while a PING awaits its ack", func(t *testing.T) {
+		setSetupTimings(t, 1, 2*time.Second, nil)
+		// The ack wait outlasts the test: the PING can only fail by the
+		// connection closing under it.
+		setH2Timings(t, readIdle, 30*time.Second, h2IdleConnTimeout)
+		logs := captureSetupLogs(t)
+		upstream, roots := newH2Upstream(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "event: ping\ndata: {}\n\n")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		})
+		var frozen atomic.Bool
+		var clientWrites atomic.Int64
+		clientSide := make(chan net.Conn, 1)
+		p := newConnectProxy(t, func(p *connectProxy, _ int, c net.Conn, br *bufio.Reader) {
+			clientSide <- c
+			p.tunnel(c, bufio.NewReader(countedReads{br, &clientWrites}), upstream, &frozen, nil)
+		})
+		rt := newTestRoundTripper(t, p, roots)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.com/v1/messages",
+			slowCloseBody{strings.NewReader("{}"), 500 * time.Millisecond})
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.ContentLength = 2
+		resp, err := roundTripWithin(t, rt, req, 8*time.Second)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		first := make([]byte, 64)
+		if _, err := resp.Body.Read(first); err != nil {
+			t.Fatalf("first event: %v", err)
+		}
+
+		// Silence the path, wait for the check's PING, and hang up on the
+		// client while it waits for the ack.
+		frozen.Store(true)
+		sent := clientWrites.Load()
+		for deadline := time.Now().Add(3 * time.Second); clientWrites.Load() == sent; time.Sleep(5 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("the client sent no PING into the silence: the health check did not run, so nothing here was tested")
+			}
+		}
+		_ = (<-clientSide).Close()
+		_, err = returnWithin(t, 8*time.Second, func() ([]byte, error) { return io.ReadAll(resp.Body) })
+		if err == nil {
+			t.Fatal("body ended cleanly although the connection closed under it")
+		}
+		time.Sleep(3 * readIdle)
+		if kills := logs.matching(log.WarnLevel, healthCheckKill); len(kills) != 0 {
+			t.Errorf("the peer's hang-up was logged as the health check killing the request: %q", kills)
+		}
+	})
 }
 
 // The per-attempt bound ends with setup: a response that runs well past
@@ -783,19 +1087,29 @@ func TestUtlsConnectionDetectsSilentDeathMidResponse(t *testing.T) {
 // deadline set on the connection) must be gone once setup has succeeded, or
 // every long response would be cut at 15s. The idle-connection timeout is
 // shorter than the pause here too: it may only run while no stream is open.
+//
+// The health check runs through the pause as well, a PING every 100ms with
+// 500ms for each ack. Without it the client writes nothing after the request,
+// so a bound left on the connection that only bites on writes -- a write
+// deadline -- would never be reached here, while in production the first PING
+// of a long pause runs into it and the check kills the connection.
 func TestUtlsAttemptBoundDoesNotCapTheResponse(t *testing.T) {
 	const attemptTimeout = 500 * time.Millisecond
+	const pause = 3 * attemptTimeout
 	setSetupTimings(t, 1, attemptTimeout, nil)
-	setH2Timings(t, h2ReadIdleTimeout, h2PingTimeout, attemptTimeout)
+	setH2Timings(t, attemptTimeout/5, attemptTimeout, attemptTimeout)
 	captureSetupLogs(t)
+	var clientWrites, writesDuringPause atomic.Int64
 	upstream, roots := newH2Upstream(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		_, _ = io.WriteString(w, "a")
 		w.(http.Flusher).Flush()
-		time.Sleep(3 * attemptTimeout)
+		before := clientWrites.Load()
+		time.Sleep(pause)
+		writesDuringPause.Store(clientWrites.Load() - before)
 		_, _ = io.WriteString(w, "b")
 	})
-	p := newConnectProxy(t, tunnelTo(upstream, nil))
+	p := newConnectProxy(t, countingTunnelTo(upstream, &clientWrites, nil))
 	rt := newTestRoundTripper(t, p, roots)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -809,6 +1123,10 @@ func TestUtlsAttemptBoundDoesNotCapTheResponse(t *testing.T) {
 	if err != nil || string(body) != "ab" {
 		t.Fatalf("read %q, %v; want \"ab\" and no error: a bound meant for setup or for idle connections cut a live response", body, err)
 	}
+	if n := writesDuringPause.Load(); n < 5 {
+		t.Errorf("the client sent %d frames during the %v pause, want a PING every ~%v: the health check did not run through it",
+			n, pause, attemptTimeout/5)
+	}
 }
 
 // The connection a request leaves behind is closed once it has carried no
@@ -819,19 +1137,43 @@ func TestUtlsAttemptBoundDoesNotCapTheResponse(t *testing.T) {
 // node's) that used to reap it -- so without this bound each request would
 // leave a connection PINGing through the proxy for good. Here the health
 // check runs every 100ms throughout, and the client must still hang up.
+//
+// It must hang up because of the idle timeout, and no sooner. Each PING's ack
+// takes a round trip -- the path has 20ms of latency on the way back -- and
+// has a full second to arrive, so a lost-PING close cannot happen on this
+// healthy path; a close well before idleConn -- from a false lost-PING
+// verdict, or any other path that drops the connection once its response
+// ends -- fails the test instead of passing for the idle close. Nor may the
+// leftover's close be logged as a health-check kill, although the PING timer
+// still reports a lost PING after it (see lostPingReporter).
 func TestUtlsIdleConnectionIsClosed(t *testing.T) {
 	const idleConn = 500 * time.Millisecond
+	const readIdle = 100 * time.Millisecond
+	const pathLatency = 20 * time.Millisecond
+	// The idle timer starts when the response's END_STREAM is processed, a
+	// hair before the body read returns; the close is seen only once the FIN
+	// reaches the proxy, which is later still.
+	const earlyMargin = 100 * time.Millisecond
 	setSetupTimings(t, 1, 2*time.Second, nil)
-	setH2Timings(t, 100*time.Millisecond, 100*time.Millisecond, idleConn)
-	captureSetupLogs(t)
+	setH2Timings(t, readIdle, time.Second, idleConn)
+	logs := captureSetupLogs(t)
 	upstream, roots := newH2Upstream(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		_, _ = io.WriteString(w, "ok")
 	})
+	var clientWrites, writesAtGone atomic.Int64
 	clientGone := make(chan struct{})
+	var goneAt time.Time // written before clientGone closes, read after
 	var goneOnce sync.Once
-	p := newConnectProxy(t, func(p *connectProxy, _ int, c net.Conn, br *bufio.Reader) {
-		p.tunnel(c, br, upstream, nil, func() { goneOnce.Do(func() { close(clientGone) }) })
+	gone := func() {
+		goneOnce.Do(func() {
+			goneAt = time.Now()
+			writesAtGone.Store(clientWrites.Load())
+			close(clientGone)
+		})
+	}
+	p := newConnectProxy(t, func(p *connectProxy, n int, c net.Conn, br *bufio.Reader) {
+		countingTunnelTo(upstream, &clientWrites, gone)(p, n, slowConn{c, pathLatency}, br)
 	})
 	rt := newTestRoundTripper(t, p, roots)
 
@@ -842,6 +1184,8 @@ func TestUtlsIdleConnectionIsClosed(t *testing.T) {
 		t.Fatalf("request failed: %v", err)
 	}
 	body, err := io.ReadAll(resp.Body)
+	readAt := time.Now()
+	writesAtRead := clientWrites.Load()
 	_ = resp.Body.Close()
 	if err != nil || string(body) != "ok" {
 		t.Fatalf("read %q, %v; want \"ok\"", body, err)
@@ -853,7 +1197,21 @@ func TestUtlsIdleConnectionIsClosed(t *testing.T) {
 		t.Fatalf("the client kept its idle connection open %v past the %v idle timeout: "+
 			"left-behind connections are never closed", 3*time.Second, idleConn)
 	}
+	if idle := goneAt.Sub(readAt); idle < idleConn-earlyMargin {
+		t.Errorf("the client hung up %v after the response ended, before the %v idle timeout: "+
+			"something other than the idle timeout closed the connection", idle, idleConn)
+	} else if n := writesAtGone.Load() - writesAtRead; n < 3 {
+		// A PING every ~120ms, then the close_notify.
+		t.Errorf("the client sent %d frames while idle, want a PING every ~%v: the health check did not run", n, readIdle)
+	}
 	if got := p.accepted.Load(); got != 1 {
 		t.Errorf("proxy saw %d connections, want 1", got)
+	}
+
+	// The lost PING the closed connection reports comes a ReadIdleTimeout
+	// after the close; give it several.
+	time.Sleep(5 * readIdle)
+	if kills := logs.matching(log.WarnLevel, healthCheckKill); len(kills) != 0 {
+		t.Errorf("the idle leftover's close was logged as a health-check kill: %q", kills)
 	}
 }

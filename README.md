@@ -351,12 +351,14 @@ contract:
   default; a negative value turns the guard off. Beneath it, the engine PINGs an HTTP/2
   connection to Anthropic or chatgpt.com after 30s without a frame and drops it if no ack
   comes within 30s, so a connection that is actually dead fails within ~60s of its last frame
-  even with the guard off. What only the guard catches is an upstream that stays connected but
-  stops sending — with the guard off, that still hangs indefinitely. Those PINGs go out on an
-  idle connection too, and every request leaves one behind (each builds its own client, so
-  none is reused), so the engine also closes a connection once it has carried no request for
-  90s; without that, the PINGs would keep every one of them open through Clash and the node
-  for good.
+  even with the guard off. Each time that check drops a connection still carrying a request, it
+  logs a warning (`utls: health check closed the connection …`) with the request's ID, so how
+  often it cuts requests short can be counted. What only the guard catches is an upstream that
+  stays connected but stops sending — with the guard off, that still hangs indefinitely. Those
+  PINGs go out on an idle connection too, and every request leaves one behind (each builds its
+  own client, so none is reused), so the engine also closes a connection once it has carried no
+  request for 90s; without that, the PINGs would keep every one of them open through Clash and
+  the node for good.
 - **`stream-early-flush` buys streaming requests out of Cloudflare's 100s guillotine.** Behind
   a Cloudflare tunnel, an origin that shows no response headers within ~100 seconds is severed
   as a 524 (the limit is fixed on free/Pro plans) — and the upstream handler writes nothing

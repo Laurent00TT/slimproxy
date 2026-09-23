@@ -60,7 +60,9 @@ First public release.
   HTTP/2 connections to those hosts are also PING-checked after 30s without a
   frame (30s to ack), so one that dies mid-response fails within ~60s instead of hanging,
   and closed once they have carried no request for 90s, so the PINGs do not
-  keep alive the connection every request leaves behind.
+  keep alive the connection every request leaves behind. Each time the check
+  drops a connection still carrying a request, it logs a warning naming the
+  connection and the request, so how often it cuts one short can be counted.
 - CLI: `serve`, `check`, `init`, `status`, `doctor`, `auth`, `tunnel`,
   `routes`, `log`, `test`, `version`; full-screen terminal dashboard when run
   on a terminal.

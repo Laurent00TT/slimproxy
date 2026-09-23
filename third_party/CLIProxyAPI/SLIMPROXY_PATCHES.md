@@ -223,13 +223,27 @@ preface——在这里重试不会让上游执行或计费两次；越过这条�
     的 DefaultTransport 一致，包级变量 `h2IdleConnTimeout`）：只在连接上没有
     活跃流时计时，不会切断活着的响应，孤儿连接空闲 90s 后由客户端关掉——顺带
     修掉了原来就有的孤儿泄漏。
+    探活误杀活请求是它伤到活流量的唯一方式，所以每条连接的 `http2.Transport`
+    设了 `CountError`（`lostPingReporter`）：收到 `conn_close_lost_ping` 且
+    连接此刻仍开着、仍有活跃流时，经发起建连那个请求的 logger 记一条 warn
+    （地址、流数、ReadIdle 与 PingTimeout）——否则这种请求只以一句
+    "http2: client connection lost" 失败，与节点死掉无从区分，也就无从判断
+    30s 的 ack 等待够不够。go1.27 下 x/net 的 Transport 包装 net/http 的内部
+    实现（`transport_wrap.go`），`CountError` 经 `HTTP2Config` 传到
+    `net/http/internal/http2` 的 `closeForLostPing`，已按源码与测试核实可达；
+    x/net 自己的 pre-1.27 实现报的是同一个字符串。两个过滤各挡一种假报：
+    std 的 readLoop 退出时不停 ReadIdle 定时器，任何原因关掉的连接（包括每个
+    请求留下、90s 后关掉的孤儿）都会在 ReadIdle 之后再报一次 lost ping；
+    PING 等 ack 期间对端挂断，PING 立即失败，而被挂断结束的请求此刻可能还
+    算活跃流——这两种都是「已关闭」，一律不记。连接开着但没有流时，探活确实
+    关了它，但没伤到请求，也不记。
     `utls_client.go` 其余改动（均带 `slimproxy patch` 注释）：`pending` 的
     类型、测试用的 `rootCAs` 字段（生产恒为 nil＝系统根证书，与原来相同）、
     `RoundTrip` 传 `req.Context()`。`internal/auth/claude/utls_transport.go`
     里的同形副本没动：它只用于 OAuth 换 token，不在请求路径上。
 
 16. `internal/runtime/executor/helps/slimproxy_utls_setup_test.go`（新增文件）
-    九个守卫，全部经真实 `proxyutil.BuildDialer` 走 loopback 上的假 CONNECT
+    十一个守卫，全部经真实 `proxyutil.BuildDialer` 走 loopback 上的假 CONNECT
     代理，上游是本地 TLS+HTTP/2 httptest 服务器，不联网：每次尝试到期、3 次后
     放弃（CONNECT 不回 / 握手不回两种卡法）；首次握手 EOF、第二次成功（恰好
     2 次拨号、上游只见 1 次请求、warn 与 info 各一条）；全部 EOF 时错误链与
@@ -238,19 +252,43 @@ preface——在这里重试不会让上游执行或计费两次；越过这条�
     代理关掉连接、请求送达后路径静默由 PING 探出——后两种是死节点在请求中途
     的样子，报的是连接错误而不是 stream error，最容易被人按错误类型「顺手」
     加上重试，所以每种都让首个请求失败、后续请求放行，重试一旦发生就表现为
-    上游第 2 次命中加一个成功响应；等待者按自己的 ctx 离开、建连方失败后被
-    释放；静默死连接由 PING 探出；尝试期限不延续到已建好的连接（响应比尝试
-    期限多流三倍时长仍完整读完，空闲关闭的时限也比停顿短，不许在有活跃流时
-    触发）；请求结束后空闲连接在 `h2IdleConnTimeout` 内由客户端关掉（期间
-    PING 每 100ms 一次，照样要关）。已做变异检查（逐条注入、见红、还原）：
+    上游第 2 次命中加一个成功响应；每种形态各走两遍：直接调 round tripper，
+    以及经 executor 实际拿到的前门（`http.Client` 套 `fallbackRoundTripper`，
+    测试期间把 example.com 临时加进 `utlsProtectedHosts`，fallback 一被调用
+    即判失败），重试加在 RoundTrip 之上也逃不掉；等待者按自己的 ctx 离开、
+    建连方失败后被释放；静默死连接由 PING 探出，且恰好记一条 warn（带请求的
+    request_id、地址与「1 个活跃流」，等过关闭后那次 lost ping 再数）；静默
+    但活着的连接不被探活误杀（ReadIdle 100ms、PingTimeout 1s，回程加 50ms
+    延迟让 ack 花一个往返，上游静默 1.5s、长于 ReadIdle+PingTimeout；body 须
+    完整读完，并数得静默期间客户端一直在发 PING）；尝试期限不延续到已建好的
+    连接（响应比尝试期限多流三倍时长仍完整读完，空闲关闭的时限也比停顿短，
+    不许在有活跃流时触发；停顿期间探活每 100ms 一次、ack 限 500ms——否则
+    只卡写的期限在测试里永远碰不到）；请求结束后空闲连接由客户端在
+    `h2IdleConnTimeout` 时关掉，且不早于它减 100ms（期间 PING 约 120ms 一次、
+    ack 限 1s、回程 20ms 延迟：探活在跑，却不可能是它关的），关后那次 lost
+    ping 不记 warn；探活的 warn 只记它切断请求：连接没有请求时路径死掉、被
+    探活关掉，不记；PING 等 ack 期间对端挂断，不记（请求 body 的 Close 慢
+    500ms，把已结束请求的流留住，让「已关闭却仍算活跃流」的窗口稳定出现）。
+    已做变异检查（逐条注入、见红、还原）：
     去掉每次尝试的期限、拨号不传 ctx、握手既不传 ctx 又去掉兜底、只试一次、
     去掉阶段或恢复日志、退避不看 ctx、建连之后重试（全部错误重试，以及只对
     非 stream error 用 `GetBody` 换新连接重发——后者只让两个连接形态的子测试
-    变红）、等待者不看 ctx、失败不释放等待者、去掉 ReadIdleTimeout、包装里写
+    变红）、`fallbackRoundTripper` 出错后经 `GetBody` 重发（只有三个前门子
+    测试变红；改动前的测试对它为绿）、等待者不看 ctx、失败不释放等待者、去掉
+    ReadIdleTimeout、PingTimeout 改成 1ms 或首个 PING 后即关连接（静默存活
+    测试红；不加回程延迟时 1ms 在 loopback 上抓不到）、包装里写
     "utls"、用 `%v` 断链、拨号错误不带尝试期限、拨号后以 `SetDeadline` 把尝试
-    期限留在连接上、建连兜底改成成功后不解除的定时器、去掉 `IdleConnTimeout`、
-    把空闲关闭换成建连后固定寿命的 `time.AfterFunc`——对应测试均红。
-    forkcheck 的 TestForkUtlsSetupGuard 把九个测试接进根模块 `go test ./...`。
+    期限留在连接上、拨号后只留 `SetWriteDeadline`（改动前的测试为绿：停顿中
+    客户端什么都不写）、建连兜底改成成功后不解除的定时器、去掉
+    `IdleConnTimeout`、`IdleConnTimeout` 缩成 1/4、响应 body 关闭即关连接、
+    首个 PING 后即关连接、PingTimeout 1ms 造成的 lost-PING 误判（这四种提前
+    关闭由下界抓住；改动前的空闲测试只有上界，对前三种实测为绿）、把空闲关闭
+    换成建连后固定寿命的 `time.AfterFunc`、不设
+    `CountError`、改用全局 logger（request_id 为空）、去掉活跃流过滤（无请求
+    子测试红）、去掉已关闭过滤（对端挂断子测试 5/5 红；body Close 不慢时实测
+    20 次里 5 次误记）、两个过滤都去掉（孤儿连接与静默死连接「恰好一条」也红）
+    ——对应测试均红。
+    forkcheck 的 TestForkUtlsSetupGuard 把十一个测试接进根模块 `go test ./...`。
 
 slimproxy 的 early-flush 在请求体还在上传时就可能预发 SSE 响应头（desperation，
 80s）。不开全双工时，net/http 把第一次响应写入当作「handler 已读完 body」：
@@ -311,7 +349,7 @@ Connection: close。2026-09-23 有 20 个请求这样死掉（desperation 预发
    两个 EnsurePublished 测试——上游自己的 xai TTFT 断言在 Windows 上
    会因时钟粒度偶发翻红）、第 6 条的三个 ctx 重挂守卫、第 8/9 条的六个
    目录客户端守卫、第 12 条的九个缓存 TTL 守卫、第 14 条的四个固定 Claude
-   模型守卫、第 16 条的九个 utls 建连守卫、第 18 条的 CPA trace writer
+   模型守卫、第 16 条的十一个 utls 建连守卫、第 18 条的 CPA trace writer
    Unwrap 守卫，并核对第 5 步的版本同步。每条守卫都用 `-v` 跑并逐个
    核对 `--- PASS:` 行：只看退出码会在测试文件被升级冲掉时假绿——
    `go test -run` 对空匹配打印 `[no tests to run]` 然后 exit 0。

@@ -18,9 +18,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync/atomic"
 	"time"
 
 	tls "github.com/refraction-networking/utls"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/proxy"
 )
@@ -57,7 +59,8 @@ var (
 	// whole body. 30s lets the ~15.5s resend land, and puts a live stream's
 	// cutoff (30s silence + wait) at ~60s, past the node's own retransmission
 	// of a ~25s stall; a dead connection is still found before the 90s stall
-	// guard and the edge's 100s cutoff.
+	// guard and the edge's 100s cutoff. Each such cut of a live request is
+	// logged (lostPingReporter), which is how to tell whether 30s is enough.
 	h2ReadIdleTimeout = 30 * time.Second
 	h2PingTimeout     = 30 * time.Second
 	// h2IdleConnTimeout closes a connection once it has carried no stream
@@ -198,10 +201,15 @@ func (t *utlsRoundTripper) connectOnce(ctx context.Context, host, addr string) (
 		return nil, setupPhaseHandshake, attemptError(attemptCtx, err)
 	}
 
+	// Each connection gets its own Transport, so the CountError hook below is
+	// per connection: it learns which one it is through live, set once the
+	// connection exists.
+	var live atomic.Pointer[http2.ClientConn]
 	tr := &http2.Transport{
 		ReadIdleTimeout: h2ReadIdleTimeout,
 		PingTimeout:     h2PingTimeout,
 		IdleConnTimeout: h2IdleConnTimeout,
+		CountError:      lostPingReporter(LogWithRequestID(ctx), addr, h2ReadIdleTimeout, h2PingTimeout, &live),
 	}
 	h2Conn, err := tr.NewClientConn(tlsConn)
 	if err != nil {
@@ -209,6 +217,7 @@ func (t *utlsRoundTripper) connectOnce(ctx context.Context, host, addr string) (
 		_ = conn.Close()
 		return nil, setupPhaseH2, attemptError(attemptCtx, err)
 	}
+	live.Store(h2Conn)
 	if !stopGuard() {
 		// The attempt ended while the preface was going out: the guard has
 		// closed, or is closing, the connection under h2Conn.
@@ -216,6 +225,62 @@ func (t *utlsRoundTripper) connectOnce(ctx context.Context, host, addr string) (
 		return nil, setupPhaseH2, attemptCtx.Err()
 	}
 	return h2Conn, "", nil
+}
+
+// lostPingType is what the HTTP/2 client passes to CountError each time a
+// health-check PING fails, just before it closes the connection: net/http's
+// internal client (which x/net's Transport wraps from go1.27 on, handing it
+// CountError through HTTP2Config) and x/net's own pre-1.27 client both say
+// "conn_close_lost_ping".
+const lostPingType = "conn_close_lost_ping"
+
+// lostPingReporter returns a connection's CountError hook, which logs the
+// health check killing that connection while it still carried a request.
+// That is the one way the check can hurt live traffic -- a stall the path
+// would have ridden out, taken for a dead connection -- and the request it
+// ends leaves no other record of why: the error says only "http2: client
+// connection lost", and slimproxy's journal keeps no more than a cause enum.
+// These lines count how often the check cuts a request, which is what says
+// whether h2PingTimeout is long enough.
+//
+// A failed PING is not always the check cutting a request, so two reports are
+// skipped:
+//   - The connection is already closed. The check did not close it, and the
+//     report is not about the check. net/http's client readLoop does not stop
+//     its ReadIdleTimeout timer when it exits, so a connection closed for any
+//     other reason -- the leftover every request leaves, reaped at
+//     h2IdleConnTimeout -- reports a lost PING a ReadIdleTimeout later. And a
+//     PING still awaiting its ack when the peer or the proxy hangs up fails at
+//     that moment, while the request the hang-up ended can still count as an
+//     open stream.
+//   - No stream is open. The check did close the connection, but it carried
+//     no request, so nothing was hurt.
+//
+// Logging either would bury the real kills: the first alone is one false
+// warning per request.
+//
+// The logger is the one of the request that set the connection up. Every
+// request builds its own round tripper, so that is the request the connection
+// carries.
+func lostPingReporter(logger *log.Entry, addr string, readIdle, pingTimeout time.Duration, live *atomic.Pointer[http2.ClientConn]) func(errType string) {
+	return func(errType string) {
+		if errType != lostPingType {
+			return
+		}
+		h2Conn := live.Load()
+		if h2Conn == nil {
+			// Not handed out yet, so no request on it.
+			return
+		}
+		// Safe to call here: the client reports a lost PING from the health
+		// check's own goroutine, holding none of the connection's locks.
+		st := h2Conn.State()
+		if st.Closed || st.StreamsActive == 0 {
+			return
+		}
+		logger.Warnf("utls: health check closed the connection to %s with %d active stream(s): the PING it sent after %s without a frame got no ack within %s",
+			addr, st.StreamsActive, readIdle, pingTimeout)
+	}
 }
 
 // dialSetupContext dials under ctx when the dialer supports it. Every dialer
