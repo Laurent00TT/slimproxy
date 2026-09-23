@@ -78,6 +78,7 @@ func targetFor(cfg *proxy.Config, configPath string, typeErrs []string) diag.Tar
 		AuthDirErr: authErr,
 		ConfigPath: configPath,
 		ConfigErrs: typeErrs,
+		ProxyURL:   cfg.ProxyURL,
 	}
 	tc, found, err := diag.DetectTunnel()
 	switch {

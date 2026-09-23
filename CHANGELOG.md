@@ -81,6 +81,17 @@ First public release.
   `tunnel-edge-dns`, which reports the same condition before anything tries to
   start; the existing `upstream-dns` check only ever looked at
   `api.anthropic.com` and stayed silent through the whole incident.
+- `doctor`'s `upstream-dns` no longer advises routing `api.anthropic.com`
+  direct. A fake-ip answer (198.18.0.0/15) was a WARN whose remedy was a direct
+  rule, yet with `proxy-url` set the upstream dial never uses that answer — the
+  name travels to the proxy inside the CONNECT — and from a region Anthropic
+  does not serve, direct is refused: every OAuth refresh in the two windows
+  slimproxy went direct (2026-09-21 21:23–23:45, 2026-09-22 23:45–00:31)
+  returned 403 `Request not allowed`, and each 403 suspends the credential's
+  model for 30 minutes. With `proxy-url` set, a fake-ip answer is now a PASS
+  that says why; without it, still a WARN, whose remedy is a node in a region
+  Anthropic serves. Whether `proxy-url` counts is decided by the engine's own
+  parser, so `direct` or a scheme the engine rejects still warns.
 - Upstream policy refusals surfaced instead of silently translated into empty
   completions (per-dialect; see README's protocol support matrix).
 - Structured event journal with bounded retention (`journal-days`).
