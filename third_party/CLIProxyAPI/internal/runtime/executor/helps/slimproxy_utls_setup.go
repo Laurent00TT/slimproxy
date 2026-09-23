@@ -47,8 +47,19 @@ var (
 	// PING after 30s of silence costs nothing on a live connection. It is
 	// sent whether or not a stream is open, though, which is what
 	// h2IdleConnTimeout is for.
+	//
+	// The ack wait is 30s, not 15s, because a lost PING is not a dead path
+	// here. It rides Clash's TCP to the node, and a brief stall puts it into
+	// Windows retransmission (RTO from 300ms, doubling: resends at ~0.5, 1.5,
+	// 3.5, 7.5, 15.5s), so at 15s any stall outlasting ~7.5s after a PING
+	// killed a request that would have recovered -- a failure this layer never
+	// caused before the patch, and one Claude Code answers by resending the
+	// whole body. 30s lets the ~15.5s resend land, and puts a live stream's
+	// cutoff (30s silence + wait) at ~60s, past the node's own retransmission
+	// of a ~25s stall; a dead connection is still found before the 90s stall
+	// guard and the edge's 100s cutoff.
 	h2ReadIdleTimeout = 30 * time.Second
-	h2PingTimeout     = 15 * time.Second
+	h2PingTimeout     = 30 * time.Second
 	// h2IdleConnTimeout closes a connection once it has carried no stream
 	// for that long. Every request builds its own round tripper, so the
 	// connection a request leaves behind is never reused and nothing here

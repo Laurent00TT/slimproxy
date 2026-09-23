@@ -58,7 +58,7 @@ First public release.
   nothing can run or be billed twice. Each failed attempt logs its phase (dial
   / handshake / h2) and duration, the only record of where a stall sits.
   HTTP/2 connections to those hosts are also PING-checked after 30s without a
-  frame, so one that dies mid-response fails within ~45s instead of hanging,
+  frame (30s to ack), so one that dies mid-response fails within ~60s instead of hanging,
   and closed once they have carried no request for 90s, so the PINGs do not
   keep alive the connection every request leaves behind.
 - CLI: `serve`, `check`, `init`, `status`, `doctor`, `auth`, `tunnel`,

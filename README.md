@@ -350,7 +350,7 @@ contract:
   never quiet that long (the upstream emits SSE pings through thinking pauses). `0` selects the
   default; a negative value turns the guard off. Beneath it, the engine PINGs an HTTP/2
   connection to Anthropic or chatgpt.com after 30s without a frame and drops it if no ack
-  comes within 15s, so a connection that is actually dead fails within ~45s of its last frame
+  comes within 30s, so a connection that is actually dead fails within ~60s of its last frame
   even with the guard off. What only the guard catches is an upstream that stays connected but
   stops sending — with the guard off, that still hangs indefinitely. Those PINGs go out on an
   idle connection too, and every request leaves one behind (each builds its own client, so

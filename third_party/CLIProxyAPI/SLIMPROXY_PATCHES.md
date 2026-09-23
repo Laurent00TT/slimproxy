@@ -211,7 +211,7 @@ preface——在这里重试不会让上游执行或计费两次；越过这条�
     eof……）并保留错误链（`%w`）：握手 EOF 仍归 connect，尝试到期归 timeout。
     等别人建连的请求改用 channel 等待（`sync.Cond` 不能被 ctx 唤醒），自己的
     ctx 一结束就离开；建连方在任何出口（含 panic）都释放等待者。HTTP/2 连接
-    设 `ReadIdleTimeout` 30s / `PingTimeout` 15s：响应中途静默死掉的连接
+    设 `ReadIdleTimeout` 30s / `PingTimeout` 30s（不是 15s：PING 走 Clash 到节点的 TCP，短暂断流会进入 Windows 重传，重发点约在 0.5/1.5/3.5/7.5/15.5s，15s 会把断流超过约 7.5s、本可恢复的活请求判死）：响应中途静默死掉的连接
     （节点消失，FIN/RST 到不了这边）由 PING 探出，而不是一直挂着；Anthropic
     的流自带 SSE ping，静默 30s 发一个 PING 对活连接无害。但 PING 不管有没有
     活跃流都会发（std http2 的 readLoop 照样调度 healthCheck），而每个请求新建
