@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -106,6 +107,10 @@ type Runtime struct {
 	// Health turns runs of failures into something said out loud. Present
 	// regardless of whether journalling is on -- see where it is constructed.
 	Health *metrics.Health
+
+	// fullDuplexWarned makes the full duplex failure report once per
+	// process -- see noteFullDuplexUnavailable.
+	fullDuplexWarned sync.Once
 }
 
 // JournalDirName is the event stream's directory, under the log directory.
@@ -583,10 +588,12 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 		// which reports the handler's intended status even after the early
 		// 200 is on the wire -- see earlyflush.go.
 		cliproxyapi.WithMiddleware(EarlyFlushMiddleware(c.streamEarlyFlush(), earlyFlushNotes{
-			flushed:         rt.noteEarlyFlush,
-			desperationHeld: rt.noteDesperationHeld,
-			translated:      rt.noteEarlyFlushTranslated,
-			timedOut:        rt.noteEarlyFlushTimeout,
+			flushed:               rt.noteEarlyFlush,
+			desperationHeld:       rt.noteDesperationHeld,
+			translated:            rt.noteEarlyFlushTranslated,
+			timedOut:              rt.noteEarlyFlushTimeout,
+			uploadCut:             rt.noteEarlyFlushUploadCut,
+			fullDuplexUnavailable: rt.noteFullDuplexUnavailable,
 		})),
 	)
 

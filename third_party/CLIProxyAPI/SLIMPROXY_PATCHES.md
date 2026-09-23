@@ -178,6 +178,37 @@ Claude Code 的 13 个请求全部是本地 502，一个都没发到上游。配
     claude-opus-5-5，形状正是 level-only、含 xhigh；线上进程 05:21 的刷新后
     服务的是远端条目。本条目此后只在启动拉取失败时兜底。
 
+slimproxy 的 early-flush 在请求体还在上传时就可能预发 SSE 响应头（desperation，
+80s）。不开全双工时，net/http 把第一次响应写入当作「handler 已读完 body」：
+未读部分不足 256KB 就关掉 body，把剩余部分读进 io.Discard（预发头要等这段
+读完才能发出），handler 的下一次 Read 拿到 ErrBodyReadAfterClose，请求以
+流内 502 结束，客户端上传了 80-124s 之后整份重发；超过 256KB 则强加
+Connection: close。2026-09-23 有 20 个请求这样死掉（desperation 预发头之后
+1ms 内配上一个 502；同日另有 14 个预发头在上传途中发出、请求照常成功）。
+解法是 slimproxy 在装定时器之前经
+`http.NewResponseController(w).EnableFullDuplex()` 打开全双工，而这个调用要
+沿 Unwrap 链一路走到 net/http 的 writer。上游的 `CPATraceIDMiddleware` 排在
+所有嵌入方中间件之前，它装的 `cpaTraceResponseWriter` 内嵌的是
+`gin.ResponseWriter` 接口——接口里没有 Unwrap——于是整条链在它这里断掉，
+调用返回 ErrNotSupported（修补前实测：slimproxy 的告警点名
+`*logging.cpaTraceResponseWriter`，经 Build 装配的全链路测试为红）。
+
+15. `internal/logging/slimproxy_cpa_trace_unwrap.go`（新增文件）
+    给 `cpaTraceResponseWriter` 加 `Unwrap() http.ResponseWriter`，返回内嵌的
+    writer。只影响 ResponseController 走到它自己没实现的方法（全双工、
+    读写 deadline）；Flush 与经内嵌提升的 Hijack 仍停在它这里，trace header
+    的注入时机不变。放在单独文件而不是改 `cpa_trace.go`：升级时不冲突；
+    上游若自己加了 Unwrap，编译会报方法重复，届时删掉本文件即可。
+
+16. `internal/logging/slimproxy_cpa_trace_unwrap_test.go`（新增文件）
+    守卫：gin 引擎挂上 `CPATraceIDMiddleware`、跑在真实 net/http 服务器上，
+    handler 从 c.Writer 调 `EnableFullDuplex`，断言成功。已做变异检查：删掉
+    第 15 条的方法，本测试即红。forkcheck 的 TestForkCPATraceUnwrapGuard 把它
+    接进根模块 `go test ./...`；slimproxy 侧
+    `proxy/earlyflush_duplex_test.go` 的 TestEarlyFlushFullDuplexThroughBuiltChain
+    经 Build 装配的真实链路断言同一性质（链上任何一个 writer 不再 Unwrap，
+    预发头就被 drain 挡住、测试即红）。
+
 # 升级上游版本的流程
 
 1. `go mod download github.com/router-for-me/CLIProxyAPI/v7@<新版本>`
@@ -187,7 +218,8 @@ Claude Code 的 13 个请求全部是本地 502，一个都没发到上游。配
    `sdk/cliproxy/slimproxy_model_catalog{,_test}.go`、
    `internal/registry/slimproxy_catalog_client{,_test}.go`、
    `internal/runtime/executor/slimproxy_cache_ttl{,_test}.go`、
-   `internal/registry/slimproxy_claude_extras{,_test}.go`
+   `internal/registry/slimproxy_claude_extras{,_test}.go`、
+   `internal/logging/slimproxy_cpa_trace_unwrap{,_test}.go`
 3. 按上面的清单重打全部补丁（grep 上游新代码确认发布点、
    `GetContextWithCancel` 与两个拉取器的 `client :=` 行没变形、
    两处 `normalizeCacheControlTTL(body)` 调用仍在且第 11 条的调用点
@@ -201,7 +233,8 @@ Claude Code 的 13 个请求全部是本地 502，一个都没发到上游。配
    两个 EnsurePublished 测试——上游自己的 xai TTFT 断言在 Windows 上
    会因时钟粒度偶发翻红）、第 6 条的三个 ctx 重挂守卫、第 8/9 条的六个
    目录客户端守卫、第 12 条的九个缓存 TTL 守卫、第 14 条的四个固定 Claude
-   模型守卫，并核对第 5 步的版本同步。每条守卫都用 `-v` 跑并逐个
+   模型守卫、第 16 条的 CPA trace writer Unwrap 守卫，并核对第 5 步的版本
+   同步。每条守卫都用 `-v` 跑并逐个
    核对 `--- PASS:` 行：只看退出码会在测试文件被升级冲掉时假绿——
    `go test -run` 对空匹配打印 `[no tests to run]` 然后 exit 0。
    要手工全量跑上游套件时：`cd third_party/CLIProxyAPI && go test ./...`。
@@ -217,5 +250,7 @@ Claude Code 的 13 个请求全部是本地 502，一个都没发到上游。配
 经 `util.SetProxy` 建客户端，第 7-9 条可撤——slimproxy 侧改为直接调
 上游的入口即可。上游若自己提供按客户端改写缓存 ttl 的配置项（可提 PR，
 理由与实测数据见第 10-12 条前的说明），第 10-12 条可撤——slimproxy 的
-`claude-code-cache-ttl` 改为映射到上游的键即可。全部补丁都撤掉后，删除
+`claude-code-cache-ttl` 改为映射到上游的键即可。上游若给自己的 response
+writer 包装加上 Unwrap（可提 PR：ResponseController 文档本就要求包装者提供
+它），第 15-16 条可撤——编译报方法重复时就是信号。全部补丁都撤掉后，删除
 本目录并移除 go.mod 的 replace 行。

@@ -30,6 +30,7 @@ package proxy
 
 import (
 	"io"
+	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -75,6 +76,14 @@ func (b *meterBody) Close() error { return b.inner.Close() }
 type meterWriter struct {
 	gin.ResponseWriter
 	nt *metrics.NetTimings
+}
+
+// Unwrap hands http.ResponseController the writer underneath: the early-flush
+// middleware's full duplex switch passes through this wrapper on its way to
+// net/http (see earlyflush.go). Write-side controller calls still stop here,
+// since Flush is implemented below and measured.
+func (w *meterWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 func (w *meterWriter) Write(b []byte) (int, error) {
