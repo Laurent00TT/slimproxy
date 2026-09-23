@@ -873,6 +873,27 @@ func sseErrorFrame(status int, body []byte) []byte {
 	return frame.Bytes()
 }
 
+// earlyFlushNotes bundles the middleware's reporters against this Runtime.
+// Note is nil-safe, so the bundle is correct with or without a journal.
+//
+// A method rather than a literal inside Build, so a test can hold every field
+// to non-nil: the middleware treats a nil note as "not wanted" -- tests pass
+// partial bundles on purpose -- so an unwired one fails silently. For
+// uploadCut that silence is total: finish returns before translated once an
+// upload failure is marked, so an interrupted upload would leave no record at
+// all, less than the misfiled 502 that note replaced.
+// TestBuildWiresEveryEarlyFlushNote pins both this and Build's use of it.
+func (r *Runtime) earlyFlushNotes() earlyFlushNotes {
+	return earlyFlushNotes{
+		flushed:               r.noteEarlyFlush,
+		desperationHeld:       r.noteDesperationHeld,
+		translated:            r.noteEarlyFlushTranslated,
+		timedOut:              r.noteEarlyFlushTimeout,
+		uploadCut:             r.noteEarlyFlushUploadCut,
+		fullDuplexUnavailable: r.noteFullDuplexUnavailable,
+	}
+}
+
 // noteEarlyFlush records a preamble commit on the request timeline.
 //
 // Kept here rather than inside the writer so the writer stays a pure HTTP

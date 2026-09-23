@@ -17,12 +17,14 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -30,6 +32,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	log "github.com/sirupsen/logrus"
+
+	"github.com/Laurent00TT/slimproxy/journal"
 )
 
 // streamingBody builds a stream:true /v1/messages body of exactly size bytes,
@@ -292,19 +296,29 @@ func TestEnableFullDuplexNamesTheBlockingWriter(t *testing.T) {
 type opaqueWriter struct{ gin.ResponseWriter }
 
 // TestFullDuplexFailureIsSaidOnce: a failed switch is reported where the
-// operator reads, naming the cause, and exactly once -- the cause is
-// structural, so it fails on every request, and a line per request would bury
-// everything else in the log.
+// operator reads -- the log, and the journal `slimproxy log` reads back --
+// naming the cause, and exactly once in each -- the cause is structural, so
+// it fails on every request, and a line per request would bury everything
+// else.
 func TestFullDuplexFailureIsSaidOnce(t *testing.T) {
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
 	log.SetLevel(log.InfoLevel)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
-	rt := &Runtime{}
+	dir := t.TempDir()
+	jw, err := journal.Open(dir, 1)
+	if err != nil {
+		t.Fatalf("journal.Open: %v", err)
+	}
+	rt := &Runtime{Journal: jw}
 	cause := fmt.Errorf("feature not supported (the writer chain stops at *proxy.opaqueWriter)")
 	rt.noteFullDuplexUnavailable(cause)
 	rt.noteFullDuplexUnavailable(cause)
+	// Close flushes; Read before it would race the writer goroutine.
+	if err := jw.Close(); err != nil {
+		t.Fatalf("journal close: %v", err)
+	}
 
 	out := buf.String()
 	if !strings.Contains(out, "opaqueWriter") {
@@ -312,6 +326,189 @@ func TestFullDuplexFailureIsSaidOnce(t *testing.T) {
 	}
 	if n := strings.Count(out, "opaqueWriter"); n != 1 {
 		t.Errorf("warning logged %d times for two failures, want once per process", n)
+	}
+
+	events := earlyFlushJournal(t, dir)
+	if len(events) != 1 {
+		t.Fatalf("journal 里有 %d 条 earlyflush 事件，want 恰好 1 条（两次失败、每进程只记一次）：%v", len(events), eventDetails(events))
+	}
+	if !strings.Contains(events[0].Detail, "opaqueWriter") {
+		t.Errorf("journal 事件没有点名挡住链条的 writer：%q", events[0].Detail)
+	}
+}
+
+// earlyFlushJournal reads back the KindHealth/earlyflush events a closed
+// journal holds.
+func earlyFlushJournal(t *testing.T, dir string) []journal.Event {
+	t.Helper()
+	res, err := journal.Read(dir, journal.Query{})
+	if err != nil {
+		t.Fatalf("journal.Read: %v", err)
+	}
+	var out []journal.Event
+	for _, e := range res.Events {
+		if e.Kind == journal.KindHealth && e.State == "earlyflush" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// eventDetails keeps a failure message to the part a reader can act on.
+func eventDetails(events []journal.Event) []string {
+	out := make([]string, len(events))
+	for i, e := range events {
+		out[i] = e.Detail
+	}
+	return out
+}
+
+// TestEarlyFlushReportsFailedFullDuplex: when the switch cannot reach
+// net/http, the middleware says so on every in-scope request, naming the
+// writer the chain stopped at, and still serves the request.
+//
+// httptest.ResponseRecorder is exactly such a writer: gin's writer unwraps
+// to it, and it has neither EnableFullDuplex nor Unwrap. In production the
+// same report is the only signal that some writer between the middleware and
+// net/http has lost its Unwrap -- desperation preambles would otherwise go
+// back to killing uploads without a word.
+//
+// Per request here; once per process is the Runtime's policy, applied where
+// the log and journal are written. Deduplicating in the middleware as well
+// would put one policy in two places.
+func TestEarlyFlushReportsFailedFullDuplex(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var failures []error
+	notes := earlyFlushNotes{
+		// Called on the request goroutine, before the timer is armed, so a
+		// plain slice is safe.
+		fullDuplexUnavailable: func(err error) { failures = append(failures, err) },
+	}
+	var seen [][]byte
+	r := gin.New()
+	r.Use(EarlyFlushMiddleware(time.Minute, notes))
+	handler := func(c *gin.Context) {
+		b, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			t.Errorf("handler body read: %v", err)
+		}
+		seen = append(seen, b)
+		c.String(http.StatusOK, "ok")
+	}
+	r.POST("/v1/messages", handler)
+	r.POST("/v1/messages/count_tokens", handler)
+
+	body := `{"stream":true,"messages":[]}`
+	for i := 0; i < 2; i++ {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body)))
+		if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
+			t.Errorf("request %d: got %d %q; a failed switch must not fail the request", i, rec.Code, rec.Body.String())
+		}
+	}
+	if len(failures) != 2 {
+		t.Fatalf("fullDuplexUnavailable fired %d times for two requests over a recorder, want 2："+
+			"开关失败时中间件没有报告，等于默默假设它成功了", len(failures))
+	}
+	for i, err := range failures {
+		if !errors.Is(err, http.ErrNotSupported) {
+			t.Errorf("failure %d = %v, want http.ErrNotSupported underneath", i, err)
+		}
+		if !strings.Contains(err.Error(), "*httptest.ResponseRecorder") {
+			t.Errorf("failure %d = %q, does not name the writer the chain stopped at", i, err)
+		}
+	}
+	for i, b := range seen {
+		if string(b) != body {
+			t.Errorf("handler %d saw %q, want the whole body", i, b)
+		}
+	}
+
+	// Out of scope: the switch is not attempted, so nothing is reported.
+	// Requests the preamble can never touch keep net/http's default.
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(body)))
+	if len(failures) != 2 {
+		t.Errorf("fullDuplexUnavailable fired for an out-of-scope request (%d reports)："+
+			"全双工只该在 desperation 可能介入的请求上开启", len(failures))
+	}
+}
+
+// TestBuildWiresEveryEarlyFlushNote: every reporter the middleware takes is
+// connected to the Runtime, and Build hands the middleware that bundle.
+//
+// A nil note is how a test opts out, so the middleware cannot tell a missing
+// one from an unwanted one. Unwired uploadCut means an interrupted upload is
+// recorded nowhere; unwired fullDuplexUnavailable means a broken unwrap chain
+// is never mentioned. Neither shows up in any request-level test.
+func TestBuildWiresEveryEarlyFlushNote(t *testing.T) {
+	// fullDuplexUnavailable also warns; this test reads the journal instead.
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	dir := t.TempDir()
+	jw, err := journal.Open(dir, 1)
+	if err != nil {
+		t.Fatalf("journal.Open: %v", err)
+	}
+	rt := &Runtime{Journal: jw}
+	notes := rt.earlyFlushNotes()
+
+	// Every field, by reflection, so a note added later and not wired here
+	// fails too.
+	v := reflect.ValueOf(notes)
+	reporters := 0
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Field(i)
+		if f.Kind() != reflect.Func {
+			continue
+		}
+		reporters++
+		if f.IsNil() {
+			t.Errorf("earlyFlushNotes.%s 没有接到 Runtime 上：这类事件会被静默丢弃", v.Type().Field(i).Name)
+		}
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+
+	// And each one reaches the journal: a non-nil note that records nothing
+	// is the same silence.
+	cutErr := errors.New("body read failed mid-upload")
+	notes.flushed(time.Second, verdictStreaming)
+	notes.desperationHeld(time.Second)
+	notes.translated(http.StatusBadGateway)
+	notes.timedOut(time.Second)
+	notes.uploadCut(123, 4567, cutErr)
+	notes.fullDuplexUnavailable(errors.New("feature not supported (the writer chain stops at *proxy.opaqueWriter)"))
+	if err := jw.Close(); err != nil {
+		t.Fatalf("journal close: %v", err)
+	}
+	events := earlyFlushJournal(t, dir)
+	if len(events) != reporters {
+		t.Errorf("journal 里有 %d 条 earlyflush 事件，want %d（每个 note 一条）：%v", len(events), reporters, eventDetails(events))
+	}
+	var cut, duplex bool
+	for _, e := range events {
+		cut = cut || (strings.Contains(e.Detail, cutErr.Error()) && strings.Contains(e.Detail, "4567"))
+		duplex = duplex || strings.Contains(e.Detail, "opaqueWriter")
+	}
+	if !cut {
+		t.Error("uploadCut 没有留下带字节数和读错误的记录")
+	}
+	if !duplex {
+		t.Error("fullDuplexUnavailable 没有留下点名 writer 的记录")
+	}
+
+	// Build must pass this bundle, not a literal of its own: the checks
+	// above see only what earlyFlushNotes returns.
+	src, err := os.ReadFile("proxy.go")
+	if err != nil {
+		t.Fatalf("read proxy.go: %v", err)
+	}
+	if !strings.Contains(string(src), "EarlyFlushMiddleware(c.streamEarlyFlush(), rt.earlyFlushNotes())") {
+		t.Error("Build 不再把 rt.earlyFlushNotes() 交给 EarlyFlushMiddleware——上面的逐字段检查就看不到它实际装配的 notes 了" +
+			"（注册方式改了的话请同步改本守卫）")
 	}
 }
 

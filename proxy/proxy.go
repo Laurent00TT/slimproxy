@@ -587,14 +587,11 @@ func Build(c Config, stateDir string, opts ...BuildOption) (*Runtime, error) {
 		// journal middlewares behind it read Status() through the wrapper,
 		// which reports the handler's intended status even after the early
 		// 200 is on the wire -- see earlyflush.go.
-		cliproxyapi.WithMiddleware(EarlyFlushMiddleware(c.streamEarlyFlush(), earlyFlushNotes{
-			flushed:               rt.noteEarlyFlush,
-			desperationHeld:       rt.noteDesperationHeld,
-			translated:            rt.noteEarlyFlushTranslated,
-			timedOut:              rt.noteEarlyFlushTimeout,
-			uploadCut:             rt.noteEarlyFlushUploadCut,
-			fullDuplexUnavailable: rt.noteFullDuplexUnavailable,
-		})),
+		//
+		// rt.earlyFlushNotes(), not a literal: a note left out here fails
+		// silently, and TestBuildWiresEveryEarlyFlushNote can only see the
+		// bundle if it is built in one place.
+		cliproxyapi.WithMiddleware(EarlyFlushMiddleware(c.streamEarlyFlush(), rt.earlyFlushNotes())),
 	)
 
 	svc, err := builder.Build()
