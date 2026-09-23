@@ -268,6 +268,15 @@ type Summary struct {
 	AvgUploadMs     int64
 	AvgWriteBlockMs int64
 
+	// UploadKBps is upload throughput: in_kb summed over the UploadRated
+	// requests divided by their summed up_ms -- total bytes over total time,
+	// not a mean of per-row rates, which one near-instant row would own.
+	// Covers only requests carrying both in_kb and an up_ms of at least
+	// MinRatedUploadMs; the rest are left out rather than guessed, so the
+	// caller must print UploadRated beside it.
+	UploadKBps  float64
+	UploadRated int
+
 	// MaxQuota is the highest five-hour window utilisation seen, or -1.
 	MaxQuota float64
 
@@ -291,11 +300,23 @@ type Summary struct {
 	CacheMissed int
 }
 
+// MinRatedUploadMs is the shortest upload leg that counts toward
+// Summary.UploadKBps.
+//
+// Below it the reading measures memory, not the link: up_ms starts once the
+// headers are parsed, so a body that arrived with them -- or sat in the
+// socket buffer while they were parsed, as a loopback upload does -- comes
+// back as a few ms of copying, and 2 MB in 4 ms would "be" 500 MB/s. The
+// millisecond truncation is also up to 20% of a 5 ms reading. At 100 ms both
+// are small next to the leg itself.
+const MinRatedUploadMs = 100
+
 // Summarise reduces events to the numbers worth printing under a listing.
 func Summarise(events []Event) Summary {
 	s := Summary{ByStatus: map[int]int{}, MaxQuota: -1}
 	var lat []int64
 	var upSum, upN, wbSum, wbN int64
+	var ratedKB, ratedMs int64
 	for _, e := range events {
 		switch e.Kind {
 		case KindRequest:
@@ -316,6 +337,15 @@ func Summarise(events []Event) Summary {
 			if e.WriteBlockMs > 0 {
 				wbSum += e.WriteBlockMs
 				wbN++
+			}
+			// Both halves or neither: a size whose leg is absent or under
+			// the floor, or a leg with no size (written before in_kb
+			// existed), has no rate -- and adding either half alone to its
+			// total would skew the ratio.
+			if e.InKB > 0 && e.UploadMs >= MinRatedUploadMs {
+				ratedKB += e.InKB
+				ratedMs += e.UploadMs
+				s.UploadRated++
 			}
 			if e.Quota5h != nil && *e.Quota5h > s.MaxQuota {
 				s.MaxQuota = *e.Quota5h
@@ -350,6 +380,9 @@ func Summarise(events []Event) Summary {
 	}
 	if wbN > 0 {
 		s.AvgWriteBlockMs = wbSum / wbN
+	}
+	if ratedMs > 0 {
+		s.UploadKBps = float64(ratedKB) * 1000 / float64(ratedMs)
 	}
 	return s
 }

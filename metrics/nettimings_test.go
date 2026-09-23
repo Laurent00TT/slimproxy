@@ -35,6 +35,26 @@ func TestNetTimingsWriteBlockAccumulates(t *testing.T) {
 	}
 }
 
+// 字节计数：并发累加不丢，非正数（io.Reader 不允许、但坏实现会给）不得倒扣
+// 已经真实送达的字节——少算不多算，也不能靠减法「少算」。
+func TestNetTimingsBodyBytesAccumulates(t *testing.T) {
+	nt := NewNetTimings(time.Now())
+	if nt.BodyBytes() != 0 {
+		t.Fatalf("fresh BodyBytes = %d, want 0", nt.BodyBytes())
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); nt.AddBodyBytes(1000) }()
+	}
+	wg.Wait()
+	nt.AddBodyBytes(0)
+	nt.AddBodyBytes(-4096)
+	if got := nt.BodyBytes(); got != 50_000 {
+		t.Fatalf("BodyBytes = %d, want 50000", got)
+	}
+}
+
 func TestNetTimingsContextRoundtrip(t *testing.T) {
 	nt := NewNetTimings(time.Now())
 	ctx := WithNetTimings(context.Background(), nt)
@@ -54,6 +74,7 @@ func TestHandleUsageMergesNetTimings(t *testing.T) {
 	nt := NewNetTimings(time.Now())
 	nt.MarkBodyDone(nt.started.Add(300 * time.Millisecond))
 	nt.AddWriteBlock(40 * time.Millisecond)
+	nt.AddBodyBytes(1_234_567)
 	ctx := WithNetTimings(context.Background(), nt)
 
 	c.HandleUsage(ctx, cliproxyusage.Record{Model: "m", Latency: time.Second})
@@ -63,11 +84,27 @@ func TestHandleUsageMergesNetTimings(t *testing.T) {
 	if got.WriteBlock != 40*time.Millisecond {
 		t.Fatalf("WriteBlock = %v, want 40ms", got.WriteBlock)
 	}
+	if got.BodyBytes != 1_234_567 {
+		t.Fatalf("BodyBytes = %d, want 1234567", got.BodyBytes)
+	}
+
+	// 没读到 EOF 就被丢下的 body：上传腿缺席，字节数照样带进样本——两者各报
+	// 各的，不能拿「有没有上传腿」去决定字节数算不算（那样一个中途断掉的
+	// body 就什么都没留下）。
+	partial := NewNetTimings(time.Now())
+	partial.AddBodyBytes(65_536)
+	c.HandleUsage(WithNetTimings(context.Background(), partial), cliproxyusage.Record{Model: "m"})
+	if got.Upload != 0 {
+		t.Fatalf("partial body Upload = %v, want 0（没到 EOF）", got.Upload)
+	}
+	if got.BodyBytes != 65_536 {
+		t.Fatalf("partial body BodyBytes = %d, want 65536（已读部分不得因缺上传腿而丢）", got.BodyBytes)
+	}
 
 	// 没经过中间件的请求（直连引擎测试、无 ctx 场景）安静地保持零值。
 	c.HandleUsage(context.Background(), cliproxyusage.Record{Model: "m"})
-	if got.Upload != 0 || got.WriteBlock != 0 {
-		t.Fatalf("bare ctx produced Upload=%v WriteBlock=%v, want zeros", got.Upload, got.WriteBlock)
+	if got.Upload != 0 || got.WriteBlock != 0 || got.BodyBytes != 0 {
+		t.Fatalf("bare ctx produced Upload=%v WriteBlock=%v BodyBytes=%d, want zeros", got.Upload, got.WriteBlock, got.BodyBytes)
 	}
 
 	// nil ctx 不得 panic：fork 的 safeInvoke 虽会兜住，但样本会随 panic 一起

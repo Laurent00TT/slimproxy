@@ -108,7 +108,14 @@ type Event struct {
 	// never as "instant".
 	UploadMs     int64 `json:"up_ms,omitempty"`
 	WriteBlockMs int64 `json:"wb_ms,omitempty"`
-	Tokens       int64 `json:"tok,omitempty"`
+	// InKB is the request body the upload leg carried, counted by the same
+	// meter on every request -- not the fidelity probe's BodyKB, which covers
+	// one request a minute and tops out at 2048 because the probe stops
+	// reading at its 2 MiB limit. Whole KiB rounded down, so a sub-KiB body
+	// is absent rather than a claimed 1, and missing means "not measured"
+	// exactly as for UploadMs.
+	InKB   int64 `json:"in_kb,omitempty"`
+	Tokens int64 `json:"tok,omitempty"`
 	// CacheRead and CacheCreation record prompt-cache activity.
 	//
 	// Kept per request rather than aggregated because the question is usually

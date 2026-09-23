@@ -10,7 +10,8 @@ import (
 // usage record cannot see: how long the client (and the tunnel in front of it)
 // took to deliver the request body, and how much time response writes spent
 // blocked on the way back. The upstream leg between them is the record's own
-// Latency/TTFT.
+// Latency/TTFT. Beside the upload leg it counts the body bytes that leg
+// carried, so the two together are a throughput rather than just a duration.
 //
 // Written from the request goroutine and read from the usage manager's
 // dispatch goroutine, which is why every field is atomic: the publish races
@@ -26,6 +27,14 @@ type NetTimings struct {
 	// a pipelined stream this is the only measurable form of return-path
 	// pressure: "upstream done -> client done" is ~0 by construction.
 	writeBlockNs atomic.Int64
+	// bodyBytes counts the request body bytes the network actually delivered,
+	// the numerator bodyDoneNs was missing: without it an upload leg could
+	// not be turned into a throughput, and the only size on record was the
+	// fidelity probe's once-a-minute sample, capped at its 2 MiB parse limit.
+	// Counted at the network side of every body drainer, so a replay from
+	// memory never passes it twice (see proxy/netmeter.go) -- and a body
+	// abandoned before EOF keeps what was read: undercount, never overcount.
+	bodyBytes atomic.Int64
 }
 
 // NewNetTimings starts the clock at started (the middleware's entry, i.e.
@@ -50,6 +59,20 @@ func (n *NetTimings) AddWriteBlock(d time.Duration) {
 	if d > 0 {
 		n.writeBlockNs.Add(int64(d))
 	}
+}
+
+// AddBodyBytes counts the b body bytes one Read delivered. A non-positive b
+// is ignored: io.Reader forbids it, and adding one would subtract bytes that
+// were really delivered.
+func (n *NetTimings) AddBodyBytes(b int) {
+	if b > 0 {
+		n.bodyBytes.Add(int64(b))
+	}
+}
+
+// BodyBytes is the request body delivered so far, 0 when none was read.
+func (n *NetTimings) BodyBytes() int64 {
+	return n.bodyBytes.Load()
 }
 
 // Upload is the measured upload leg, 0 when the body never reached EOF.
