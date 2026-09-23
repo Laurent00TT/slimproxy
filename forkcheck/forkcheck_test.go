@@ -134,6 +134,28 @@ func TestForkCacheTTLGuard(t *testing.T) {
 		})
 }
 
+// TestForkClaudeExtrasGuard runs the fork's guard tests for the pinned Claude
+// models (SLIMPROXY_PATCHES.md 第 13-14 条).
+//
+// What it defends: the two call sites that merge the pinned entries into the
+// catalog when it is read. Lose GetClaudeModels' and the model is never
+// registered -- a local 502 "unknown provider" for a model Anthropic serves,
+// the exact 2026-09-23 incident this exists for. Lose LookupStaticModelInfo's
+// and the thinking layer stops finding the entry wherever it falls back on
+// the static catalog. Both were mutation-checked red. The shape test pins the
+// levels-only thinking block: min/max would put budget_tokens on the wire,
+// which Opus 5.5 rejects with a 400.
+func TestForkClaudeExtrasGuard(t *testing.T) {
+	runForkGuard(t, "fork 的固定 Claude 模型守卫（目录读取时的补缺调用点可能被升级冲掉了，Opus 5.5 会退回本地 502）",
+		[]string{"./internal/registry/"},
+		[]string{
+			"TestClaudeExtrasFillCatalogGap",
+			"TestClaudeExtrasSurviveRemoteRefresh",
+			"TestClaudeExtrasYieldToRemoteEntry",
+			"TestClaudeExtraOpus55IsLevelOnly",
+		})
+}
+
 // TestForkBaselineVersionMatchesPatchDoc pins the version bookkeeping nothing
 // else enforces: with a directory replace active, go.mod's require version is
 // pure annotation (the build always comes from third_party/), and `slimproxy

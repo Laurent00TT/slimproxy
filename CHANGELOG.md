@@ -23,6 +23,16 @@ First public release.
   to an evicted conversation and wrote all of it again at full price — 18 full
   rewrites of a ~300k-token prefix in one morning, measured 2026-09-16. Off by
   default (breakpoints go as written); `slimproxy init` generates `"1h"`.
+- Claude Opus 5.5 (`claude-opus-5-5`) is served before the upstream model
+  catalog lists it. Routing only admits catalog models, and the catalog is
+  replaced wholesale by the remote copy at every start, so a released model the
+  remote has not yet listed was a local 502 `unknown provider` — all thirteen
+  Claude Code requests for it on 2026-09-23 before this change, none sent
+  upstream. The engine now fills catalog gaps with pinned entries when the
+  catalog is read; the remote entry takes over once published (it was, later
+  the same day), and the pinned one still covers a start whose catalog fetch
+  fails. The pinned thinking block is levels-only, so no positive budget
+  reaches Opus 5.5 as `budget_tokens`, which it rejects.
 - CLI: `serve`, `check`, `init`, `status`, `doctor`, `auth`, `tunnel`,
   `routes`, `log`, `test`, `version`; full-screen terminal dashboard when run
   on a terminal.

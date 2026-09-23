@@ -134,6 +134,50 @@ Anthropic 的提示缓存默认只活 5 分钟，而且从**上一次读到该�
     注释掉任一调用点、或把改写改成只补缺，对应测试即红。forkcheck 的
     TestForkCacheTTLGuard 把九个测试接进根模块 `go test ./...`。
 
+路由以模型目录为闸：没有任何 auth 登记过的模型 id，在 handler 里直接回
+502 `unknown provider for model`，executor 都不会跑。而目录只在第一次远端
+拉取成功之前是内嵌的 models.json——拉取成功即**整份替换**
+（`model_updater.go` 的 `modelsCatalogStore.data = parsed`），所以改内嵌
+文件加的模型在每次启动后几秒就消失；Anthropic 已发布、router-for-me/models
+还没收录的模型于是完全不可达。2026-09-23 的 claude-opus-5-5 正是如此：
+Claude Code 的 13 个请求全部是本地 502，一个都没发到上游。配置层没有替代
+方案：`oauth-model-alias` 会把上游模型悄悄换成别名的源模型，
+`claude-api-key` 的 models 只对 API key 生效（且 UserDefined 会跳过思考
+校验、发 budget_tokens）。
+
+13. `internal/registry/slimproxy_claude_extras.go`（新增文件）
+    `withSlimproxyClaudeExtras` 在**读取**目录时把固定条目补进 claude 段，
+    `lookupSlimproxyClaudeExtra` 是静态查找在各段都落空后的兜底。调用点各
+    一行（`model_definitions.go` 的 `GetClaudeModels` 与
+    `LookupStaticModelInfo`，带 `slimproxy patch` 注释）。只补缺：远端一旦
+    列出同 id，服务的是远端条目。读取时合并而不是写进 store，是为了让
+    `detectChangedProviders` 继续拿远端比远端——否则每 3 小时的刷新都会
+    报 claude 变更、重注册所有 auth（顺带清掉冷却状态）。
+    目前只有一条：claude-opus-5-5。thinking 块是承重的：只有 levels
+    （low…max 五级）、不带 min/max——思考层据此把它当 level-only 模型，任何
+    客户端的 budget 都改写成 adaptive + output_config.effort；带上 min/max
+    （claude-fable-5 的形状）就会把 budget_tokens 发上游，而 Opus 5.5 对
+    enabled/budget_tokens 一律 400。zero_allowed 不设，但它**拦不住**显式的
+    thinking.type "disabled"：Claude 目标走 `internal/thinking/validate.go`
+    的 ModeNone 直通，与目录无关。
+
+14. `internal/registry/slimproxy_claude_extras_test.go`（新增文件）
+    四个守卫：目录缺该 id 时注册、静态查找、按渠道列举都恰好各见一条（且
+    调用方改返回值不会污染下一次读取）；远端刷新整份替换目录后仍在、没被
+    写进 store、未变化的刷新不报变更；远端列出同 id 后让位给远端条目；
+    条目形状（level-only、五级、无 min/max、1M/128K）。已做变异检查：去掉
+    任一调用点，对应测试即红。forkcheck 的 TestForkClaudeExtrasGuard 把四个
+    测试接进根模块 `go test ./...`。
+    撤销条件：**内嵌**的 models.json 以正确形状（level-only、含 xhigh）列出
+    某个 id 后——也就是下次升级上游、重建本目录之后——从
+    `slimproxyClaudeExtras` 删掉它（`TestClaudeExtrasFillCatalogGap` 读的是
+    内嵌目录，届时会 Skip 并提示）；条目删空后连同两个调用点一起撤。只有
+    远端列出还不够：启动时远端拉取失败，服务的就是内嵌目录。若远端条目带了
+    min/max，先别删——那会把 budget_tokens 带回上游，应改成本地条目优先。
+    现状：router-for-me/models 于 2026-09-23 02:42（+08）收录了
+    claude-opus-5-5，形状正是 level-only、含 xhigh；线上进程 05:21 的刷新后
+    服务的是远端条目。本条目此后只在启动拉取失败时兜底。
+
 # 升级上游版本的流程
 
 1. `go mod download github.com/router-for-me/CLIProxyAPI/v7@<新版本>`
@@ -142,11 +186,13 @@ Anthropic 的提示缓存默认只活 5 分钟，而且从**上一次读到该�
    `sdk/api/handlers/slimproxy_context_reparent_test.go`、
    `sdk/cliproxy/slimproxy_model_catalog{,_test}.go`、
    `internal/registry/slimproxy_catalog_client{,_test}.go`、
-   `internal/runtime/executor/slimproxy_cache_ttl{,_test}.go`
+   `internal/runtime/executor/slimproxy_cache_ttl{,_test}.go`、
+   `internal/registry/slimproxy_claude_extras{,_test}.go`
 3. 按上面的清单重打全部补丁（grep 上游新代码确认发布点、
    `GetContextWithCancel` 与两个拉取器的 `client :=` 行没变形、
    两处 `normalizeCacheControlTTL(body)` 调用仍在且第 11 条的调用点
-   排在它前面；grep `slimproxy patch` 核对齐全）
+   排在它前面、`GetClaudeModels` 与 `LookupStaticModelInfo` 仍从
+   `getModels()` 读 claude 段；grep `slimproxy patch` 核对齐全）
 4. 仓库根目录 `go build ./... && go test ./...`。**不要**写
    `go test ./third_party/...`：本目录是嵌套 module，根目录的包通配符
    进不来——那条命令只会打一行 warning 然后 exit 0，一个 fork 测试都
@@ -154,7 +200,8 @@ Anthropic 的提示缓存默认只活 5 分钟，而且从**上一次读到该�
    的 `forkcheck` 包：它 cd 进本目录跑第 3 条补丁的回归测试（-run 只挑
    两个 EnsurePublished 测试——上游自己的 xai TTFT 断言在 Windows 上
    会因时钟粒度偶发翻红）、第 6 条的三个 ctx 重挂守卫、第 8/9 条的六个
-   目录客户端守卫、第 12 条的九个缓存 TTL 守卫，并核对第 5 步的版本同步。每条守卫都用 `-v` 跑并逐个
+   目录客户端守卫、第 12 条的九个缓存 TTL 守卫、第 14 条的四个固定 Claude
+   模型守卫，并核对第 5 步的版本同步。每条守卫都用 `-v` 跑并逐个
    核对 `--- PASS:` 行：只看退出码会在测试文件被升级冲掉时假绿——
    `go test -run` 对空匹配打印 `[no tests to run]` 然后 exit 0。
    要手工全量跑上游套件时：`cd third_party/CLIProxyAPI && go test ./...`。

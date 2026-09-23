@@ -32,7 +32,8 @@ type staticModelsJSON struct {
 
 // GetClaudeModels returns the standard Claude model definitions.
 func GetClaudeModels() []*ModelInfo {
-	return cloneModelInfos(getModels().Claude)
+	// slimproxy patch: fill catalog gaps with pinned Claude models (SLIMPROXY_PATCHES.md 第 13 条).
+	return withSlimproxyClaudeExtras(cloneModelInfos(getModels().Claude))
 }
 
 // GetGeminiModels returns the standard Gemini model definitions.
@@ -327,5 +328,6 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		}
 	}
 
-	return nil
+	// slimproxy patch: pinned Claude models, after the catalog has missed (SLIMPROXY_PATCHES.md 第 13 条).
+	return lookupSlimproxyClaudeExtra(modelID)
 }
