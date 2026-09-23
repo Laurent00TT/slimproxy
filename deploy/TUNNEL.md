@@ -218,10 +218,13 @@ watched fail 6 times out of 6. Either way it is a probe, never the end state.
 The fix, for both shapes, is to keep the tunnel's control connection off the
 proxy entirely. Two ways, depending on what the proxy client exposes:
 
-1. **If it accepts custom rules** (most Clash/mihomo-based clients do): route
-   `DOMAIN-SUFFIX,argotunnel.com` to DIRECT, and add `+.argotunnel.com` to
-   `fake-ip-filter` so DNS returns the real address. Both are needed — a direct
-   rule alone still receives a `198.18.x.x` answer and never matches.
+1. **If it accepts custom rules** (most Clash/mihomo-based clients do): add
+   `+.argotunnel.com` to `fake-ip-filter` so DNS returns the real address, and
+   give `DOMAIN-SUFFIX,argotunnel.com` (plus the two edge ranges as `IP-CIDR`
+   rules) an explicit target. Both are needed — a rule alone still receives a
+   `198.18.x.x` answer and never matches. DIRECT is the simplest target and is
+   what first fixed this setup; from mainland China it is also slow, so read
+   "If it connects but uploads crawl" below before settling on it.
 
    Clash Verge Rev adds a trap of its own. An extend file takes effect only if
    the active profile lists it under `option:` in `profiles.yaml`; a "rules"
@@ -283,9 +286,9 @@ partial fix resembles a working one closely enough to be mistaken for it. All
 four of these hold on a healthy run:
 
 - The `ip=` fields hold addresses outside `198.18.0.0/15` (here
-  `198.41.192.x` / `198.41.200.x`) and `location=` names a real anycast colo —
-  here `lax01` and `lax05`; yours depends on where you are, so read it as "a
-  colo at all", not as those two codes.
+  `198.41.192.x` / `198.41.200.x`) and `location=` names a real anycast colo.
+  For *connecting*, read it as "a colo at all"; which colo it is decides how
+  fast the tunnel is, which is the next section.
 - All four `connIndex` values, 0 through 3, register.
 - Zero `Failed to dial` lines.
 - No `You requested 4 HA connections but I can give you at most 2` line. It
@@ -312,6 +315,63 @@ curl -s -H "accept: application/dns-json" "https://cloudflare-dns.com/dns-query?
 
 `"Status":3` is NXDOMAIN (no record), `"Status":0` with an `Answer` array
 containing `104.x` / `172.67.x` addresses is a working proxied record.
+
+### If it connects but uploads crawl
+
+The tunnel registers, `/healthz` answers, and yet every Claude Code turn waits
+a minute before the model even starts. `slimproxy log` shows where: the `传`
+(upload) leg of each request row, the time from the request headers reaching
+slimproxy to the last byte of the body. Claude Code resends the whole
+conversation every turn — ~2 MB at a few hundred thousand tokens — and prompt
+caching saves the upstream's compute, not those bytes on the wire.
+
+Measured on this setup, 2026-09-23, same client, same tunnel, DIRECT route:
+upload p50 **0.3 s at 03:00, 38 s at 16:00**, with the model itself at ~8 s
+throughout. cloudflared's own metrics (`127.0.0.1:20241/metrics`) showed why:
+`quic_client_smoothed_rtt` ~200 ms and ~2.5% of sent packets lost
+(`quic_client_lost_packets` over `quic_client_sent_bytes` / MTU). At that RTT
+and loss one congestion-controlled connection tops out near 50 KB/s, which is
+what the journal showed; 179 connection re-registrations in 15 hours came with
+it.
+
+The cause is the colo in `location=`. Anycast lands a connection wherever its
+*source* address routes to, and from a mainland-China line going DIRECT that
+was `lax*` / `sjc*` — the tunnel then crosses the public trans-Pacific path,
+which is congested every afternoon. On 2026-09-16..18 the same tunnel left
+through a proxy node, registered in `hkg*` / `tpe*`, and uploads stayed at
+0.3 s all day. **Choosing the egress is the only way to choose the colo**;
+pinning an edge IP does not help, since every colo announces the same
+addresses.
+
+The fix is to send the edge connections through a nearby node, keeping the
+fake-ip exemption from the previous section. With the exemption in place the
+node is handed a real `198.41.x.x` address rather than a hostname, and QUIC
+through it registers normally; without it you are back in shape B. On this
+machine that is a fallback group in the Clash Verge script extend: a preferred
+Singapore node, the other Singapore and Hong Kong nodes after it, DIRECT last
+(so losing every node degrades to the slow path instead of losing the tunnel),
+members picked by name pattern from the current subscription so a renamed node
+never leaves the group pointing at nothing. Pick nodes by measured latency to
+Cloudflare, not by name — the controller's
+`GET /proxies/<node>/delay?url=https://www.cloudflare.com/cdn-cgi/trace` gives
+it per node, and the colo a node lands on is whatever `location=` says
+afterwards. Result here: `sin*` colos, RTT 110–145 ms, a 2 MB body uploaded end
+to end in 1.4 s.
+
+Two things surprise on the way:
+
+- **Re-routing does not move live connections.** Changing the rule while
+  cloudflared runs makes QUIC *migrate* the existing connections onto the new
+  path — still anchored to the old colo, so they get worse (200 → 283 ms here),
+  not better. Only fresh connections land in the new colo, which means a
+  cloudflared restart. To do it without a gap, start a second connector for the
+  same tunnel first (`cloudflared tunnel --metrics 127.0.0.1:20299 run <id>`),
+  confirm its `location=`, then `slimproxy tunnel down` / `up -detach` while
+  `cloudflared_tunnel_concurrent_requests_per_tunnel` is 0, and stop the
+  second connector afterwards.
+- **The startup pre-check reports UDP and TCP 7844 as FAIL through the node**
+  (`hard_fail=true`) in the same run where all four connections register. As
+  in shape B, the dial and registration lines are the ones to believe.
 
 ## 8. Verify
 

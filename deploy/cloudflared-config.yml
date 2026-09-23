@@ -34,10 +34,13 @@ credentials-file: C:\Users\<you>\.cloudflared\REPLACE_WITH_TUNNEL_ID.json
 # table: 198.18.x.x means the proxy is on the path. `slimproxy doctor` reports
 # that without reading the log at all.
 #
-# Either way the fix is both halves -- route *.argotunnel.com direct AND exempt
-# it from fake-ip -- because a direct rule alone still receives the 198.18.x.x
-# answer and so never matches. TUNNEL.md, "If it never connects". Then leave
-# this commented out and keep QUIC.
+# Either way the fix is both halves -- give *.argotunnel.com an explicit rule
+# AND exempt it from fake-ip -- because a rule alone still receives the
+# 198.18.x.x answer and so never matches. TUNNEL.md, "If it never connects".
+# The rule's target then decides the edge colo and with it the speed: from
+# mainland China DIRECT lands in LAX/SJC, a nearby proxy node lands near that
+# node (TUNNEL.md, "If it connects but uploads crawl"). Then leave this
+# commented out and keep QUIC.
 # protocol: http2
 
 # Keep the connection warm and fail fast on a dead edge.
