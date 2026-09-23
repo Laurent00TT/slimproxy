@@ -26,6 +26,11 @@ package proxy
 // If an upstream version bump makes any of these counts move, that is a real
 // behavior change worth a deliberate decision, not a silent one -- these
 // assertions are the tripwire.
+//
+// "Attempt" here is one executor run, i.e. one write of the request. A failed
+// connection setup is retried below this layer, inside the engine's utls
+// round tripper (third_party/CLIProxyAPI/SLIMPROXY_PATCHES.md 第 15 条), where
+// no byte of the request has been written yet; it does not move these counts.
 
 import (
 	"context"

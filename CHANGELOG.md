@@ -33,6 +33,26 @@ First public release.
   the same day), and the pinned one still covers a start whose catalog fetch
   fails. The pinned thinking block is levels-only, so no positive budget
   reaches Opus 5.5 as `budget_tokens`, which it rejects.
+- A connection setup that fails once no longer costs the request. Connection
+  setup to Anthropic and chatgpt.com (dial, proxy CONNECT, TLS handshake) ran
+  with no deadline and no retry, and with one credential nothing above it
+  retries. On the Clash path a dead node surfaced as an EOF inside the handshake
+  ~5s in, or the handshake hung ~60s — 82 and 47 times over 2026-09-21..23,
+  every one before a response byte, each making Claude Code resend a 0.5–2MB
+  body. Each setup attempt is now bounded at 15s and a failed one retried
+  (three attempts, 1s and 3s apart), abandoned as soon as the client goes away.
+  That rescues a transient failure, or one Clash routes around between
+  attempts. It does not rescue a node that stays dead: if Clash keeps choosing
+  it for every attempt (a `select` group pinned to it, a `url-test` or
+  `fallback` group that has not re-probed yet), all three fail, and the EOF
+  shape then fails the request after ~19s instead of ~5s (the hang after ~49s
+  instead of ~60s). Nothing is retried once the request has been sent, so
+  nothing can run or be billed twice. Each failed attempt logs its phase (dial
+  / handshake / h2) and duration, the only record of where a stall sits.
+  HTTP/2 connections to those hosts are also PING-checked after 30s without a
+  frame, so one that dies mid-response fails within ~45s instead of hanging,
+  and closed once they have carried no request for 90s, so the PINGs do not
+  keep alive the connection every request leaves behind.
 - CLI: `serve`, `check`, `init`, `status`, `doctor`, `auth`, `tunnel`,
   `routes`, `log`, `test`, `version`; full-screen terminal dashboard when run
   on a terminal.

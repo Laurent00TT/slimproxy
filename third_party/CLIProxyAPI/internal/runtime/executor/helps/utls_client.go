@@ -2,13 +2,13 @@ package helps
 
 import (
 	"context"
+	"crypto/x509"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	tls "github.com/refraction-networking/utls"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
@@ -22,8 +22,15 @@ import (
 type utlsRoundTripper struct {
 	mu          sync.Mutex
 	connections map[string]*http2.ClientConn
-	pending     map[string]*sync.Cond
-	dialer      proxy.Dialer
+	// slimproxy patch (SLIMPROXY_PATCHES.md 第 15 条): a channel closed when
+	// the host's setup ends, not a sync.Cond -- a waiter must be able to
+	// leave when its own request does, and a Cond cannot be woken by a
+	// context. getOrCreateConnection lives in slimproxy_utls_setup.go.
+	pending map[string]chan struct{}
+	dialer  proxy.Dialer
+	// rootCAs is a test seam (slimproxy patch): nil, as it always is in
+	// production, verifies against the system roots exactly as before.
+	rootCAs *x509.CertPool
 }
 
 func newUtlsRoundTripper(proxyURL string) *utlsRoundTripper {
@@ -38,70 +45,16 @@ func newUtlsRoundTripper(proxyURL string) *utlsRoundTripper {
 	}
 	return &utlsRoundTripper{
 		connections: make(map[string]*http2.ClientConn),
-		pending:     make(map[string]*sync.Cond),
+		pending:     make(map[string]chan struct{}),
 		dialer:      dialer,
 	}
 }
 
-func (t *utlsRoundTripper) getOrCreateConnection(host, addr string) (*http2.ClientConn, error) {
-	t.mu.Lock()
-
-	if h2Conn, ok := t.connections[host]; ok && h2Conn.CanTakeNewRequest() {
-		t.mu.Unlock()
-		return h2Conn, nil
-	}
-
-	if cond, ok := t.pending[host]; ok {
-		cond.Wait()
-		if h2Conn, ok := t.connections[host]; ok && h2Conn.CanTakeNewRequest() {
-			t.mu.Unlock()
-			return h2Conn, nil
-		}
-	}
-
-	cond := sync.NewCond(&t.mu)
-	t.pending[host] = cond
-	t.mu.Unlock()
-
-	h2Conn, err := t.createConnection(host, addr)
-
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	delete(t.pending, host)
-	cond.Broadcast()
-
-	if err != nil {
-		return nil, err
-	}
-
-	t.connections[host] = h2Conn
-	return h2Conn, nil
-}
-
-func (t *utlsRoundTripper) createConnection(host, addr string) (*http2.ClientConn, error) {
-	conn, err := t.dialer.Dial("tcp", addr)
-	if err != nil {
-		return nil, err
-	}
-
-	tlsConfig := &tls.Config{ServerName: host}
-	tlsConn := tls.UClient(conn, tlsConfig, tls.HelloChrome_Auto)
-
-	if err := tlsConn.Handshake(); err != nil {
-		conn.Close()
-		return nil, err
-	}
-
-	tr := &http2.Transport{}
-	h2Conn, err := tr.NewClientConn(tlsConn)
-	if err != nil {
-		tlsConn.Close()
-		return nil, err
-	}
-
-	return h2Conn, nil
-}
+// slimproxy patch (SLIMPROXY_PATCHES.md 第 15 条): getOrCreateConnection and
+// createConnection moved to slimproxy_utls_setup.go, where connection setup
+// takes the request's context, is bounded per attempt and is retried. An
+// upstream rebuild that brings the original two back fails to compile on the
+// duplicate methods, which is the intended alarm.
 
 func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	hostname := req.URL.Hostname()
@@ -111,11 +64,16 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	addr := net.JoinHostPort(hostname, port)
 
-	h2Conn, err := t.getOrCreateConnection(hostname, addr)
+	// slimproxy patch: setup runs under the request's context, so a client
+	// that has gone stops it, and it is retried inside -- see createConnection.
+	h2Conn, err := t.getOrCreateConnection(req.Context(), hostname, addr)
 	if err != nil {
 		return nil, err
 	}
 
+	// From here the request is on the wire and may have reached the upstream:
+	// an error is returned after this one attempt and never retried, since a
+	// resend could run (and bill) the request twice.
 	resp, err := h2Conn.RoundTrip(req)
 	if err != nil {
 		t.mu.Lock()

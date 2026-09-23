@@ -178,6 +178,80 @@ Claude Code 的 13 个请求全部是本地 502，一个都没发到上游。配
     claude-opus-5-5，形状正是 level-only、含 xhigh；线上进程 05:21 的刷新后
     服务的是远端条目。本条目此后只在启动拉取失败时兜底。
 
+claude 与 codex executor 经 `helps.NewUtlsHTTPClient` 发请求，而它每个请求
+新建一个客户端，所以每个请求都要走一次建连。上游的 `createConnection` 用
+`context.Background()` 拨号、`Handshake()` 不设期限、失败不重试。本部署的
+链路是 slimproxy → proxy-url（Clash）→ 代理节点 → api.anthropic.com：Clash
+立即回 CONNECT 200，之后才以自己的 5s 超时去拨节点，于是节点死掉表现为握手
+里的一个 EOF（开始后约 5.0s）；另有握手一挂约 60s、直到外部把它切断。
+2026-09-21..23 实测 82 次 ~5.0s 失败、47 次 ~60s 失败，全部发生在任何响应
+字节之前，每次都让 Claude Code 重发 0.5-2MB 的请求体；单凭据下 slimproxy
+自己不重试（proxy/upstreamretry_test.go 钉的就是「一次」）。建连阶段请求还
+一个字节都没写出去——代理只见过 CONNECT，对端只见过 ClientHello 和 HTTP/2
+preface——在这里重试不会让上游执行或计费两次；越过这条线（`h2Conn.RoundTrip`
+之后）就可能，所以那之后的错误保持上游行为：一次，原样返回。
+
+15. `internal/runtime/executor/helps/slimproxy_utls_setup.go`（新增文件）
+    上游 `utls_client.go` 的 `getOrCreateConnection` / `createConnection`
+    搬到这里改写，原文件删掉这两个方法、留一段 `slimproxy patch` 注释——升级
+    重建若把原版带回来，重复方法直接编译失败，这是有意的报警。改写内容：
+    请求 ctx 从 `RoundTrip` 一路传下来；每次建连尝试（拨号含 CONNECT、uTLS
+    `HandshakeContext`、HTTP/2 preface）受 `connectAttemptTimeout` 15s 约束
+    （要盖住 Clash 的 5s 节点拨号加一次握手；正常建连约 0.6s）。拨号走
+    `proxy.ContextDialer`：`proxyutil` 的 HTTP CONNECT 拨号器本来就在 ctx
+    结束时切断 CONNECT 的读写，那边不用打补丁；preface 的写不吃 ctx，由
+    `context.AfterFunc` 在尝试到期时关掉裸连接兜住。失败即关连接重试，共
+    3 次、间隔 1s/3s（包级变量，测试可缩），请求 ctx 一结束立即放弃。重试
+    只救得了瞬时故障或 Clash 在两次尝试之间换了节点的情况：节点一直死着、
+    Clash 又一直选它时三次都失败，EOF 形态从约 5s 变成约 19s 才失败（挂起
+    形态从约 60s 变成约 49s）。每次
+    失败以 warn 记下阶段（dial / handshake / h2）、耗时与错误，重试成功记
+    info——journal 只留 cause 枚举，这是 ~60s 挂在哪一段的唯一记录。最终
+    错误的包装措辞避开 `metrics.CauseFromText` 匹配的词（tls、dial、timeout、
+    eof……）并保留错误链（`%w`）：握手 EOF 仍归 connect，尝试到期归 timeout。
+    等别人建连的请求改用 channel 等待（`sync.Cond` 不能被 ctx 唤醒），自己的
+    ctx 一结束就离开；建连方在任何出口（含 panic）都释放等待者。HTTP/2 连接
+    设 `ReadIdleTimeout` 30s / `PingTimeout` 15s：响应中途静默死掉的连接
+    （节点消失，FIN/RST 到不了这边）由 PING 探出，而不是一直挂着；Anthropic
+    的流自带 SSE ping，静默 30s 发一个 PING 对活连接无害。但 PING 不管有没有
+    活跃流都会发（std http2 的 readLoop 照样调度 healthCheck），而每个请求新建
+    一个 round tripper，响应结束后留下的连接既不复用、客户端也从不关——补丁前
+    靠对端、节点或 Clash 的空闲计时器回收，PING 和 ack 却会把这些按流量计的
+    计时器一直重置，孤儿连接于是随请求数累积、永远开着（实测：不设
+    `IdleConnTimeout`、PING 间隔缩到 100ms，请求结束 3.5s 后客户端仍没关
+    连接，期间 PING 一直在发）。所以同时设 `IdleConnTimeout` 90s（与 net/http
+    的 DefaultTransport 一致，包级变量 `h2IdleConnTimeout`）：只在连接上没有
+    活跃流时计时，不会切断活着的响应，孤儿连接空闲 90s 后由客户端关掉——顺带
+    修掉了原来就有的孤儿泄漏。
+    `utls_client.go` 其余改动（均带 `slimproxy patch` 注释）：`pending` 的
+    类型、测试用的 `rootCAs` 字段（生产恒为 nil＝系统根证书，与原来相同）、
+    `RoundTrip` 传 `req.Context()`。`internal/auth/claude/utls_transport.go`
+    里的同形副本没动：它只用于 OAuth 换 token，不在请求路径上。
+
+16. `internal/runtime/executor/helps/slimproxy_utls_setup_test.go`（新增文件）
+    九个守卫，全部经真实 `proxyutil.BuildDialer` 走 loopback 上的假 CONNECT
+    代理，上游是本地 TLS+HTTP/2 httptest 服务器，不联网：每次尝试到期、3 次后
+    放弃（CONNECT 不回 / 握手不回两种卡法）；首次握手 EOF、第二次成功（恰好
+    2 次拨号、上游只见 1 次请求、warn 与 info 各一条）；全部 EOF 时错误链与
+    journal 分类不变；退避期间请求 ctx 结束即返回且不再拨号；建连之后的错误
+    不重试（1 次拨号、上游 1 次），分三种形态：上游 RST_STREAM、请求送达后
+    代理关掉连接、请求送达后路径静默由 PING 探出——后两种是死节点在请求中途
+    的样子，报的是连接错误而不是 stream error，最容易被人按错误类型「顺手」
+    加上重试，所以每种都让首个请求失败、后续请求放行，重试一旦发生就表现为
+    上游第 2 次命中加一个成功响应；等待者按自己的 ctx 离开、建连方失败后被
+    释放；静默死连接由 PING 探出；尝试期限不延续到已建好的连接（响应比尝试
+    期限多流三倍时长仍完整读完，空闲关闭的时限也比停顿短，不许在有活跃流时
+    触发）；请求结束后空闲连接在 `h2IdleConnTimeout` 内由客户端关掉（期间
+    PING 每 100ms 一次，照样要关）。已做变异检查（逐条注入、见红、还原）：
+    去掉每次尝试的期限、拨号不传 ctx、握手既不传 ctx 又去掉兜底、只试一次、
+    去掉阶段或恢复日志、退避不看 ctx、建连之后重试（全部错误重试，以及只对
+    非 stream error 用 `GetBody` 换新连接重发——后者只让两个连接形态的子测试
+    变红）、等待者不看 ctx、失败不释放等待者、去掉 ReadIdleTimeout、包装里写
+    "utls"、用 `%v` 断链、拨号错误不带尝试期限、拨号后以 `SetDeadline` 把尝试
+    期限留在连接上、建连兜底改成成功后不解除的定时器、去掉 `IdleConnTimeout`、
+    把空闲关闭换成建连后固定寿命的 `time.AfterFunc`——对应测试均红。
+    forkcheck 的 TestForkUtlsSetupGuard 把九个测试接进根模块 `go test ./...`。
+
 # 升级上游版本的流程
 
 1. `go mod download github.com/router-for-me/CLIProxyAPI/v7@<新版本>`
@@ -187,12 +261,16 @@ Claude Code 的 13 个请求全部是本地 502，一个都没发到上游。配
    `sdk/cliproxy/slimproxy_model_catalog{,_test}.go`、
    `internal/registry/slimproxy_catalog_client{,_test}.go`、
    `internal/runtime/executor/slimproxy_cache_ttl{,_test}.go`、
-   `internal/registry/slimproxy_claude_extras{,_test}.go`
+   `internal/registry/slimproxy_claude_extras{,_test}.go`、
+   `internal/runtime/executor/helps/slimproxy_utls_setup{,_test}.go`
 3. 按上面的清单重打全部补丁（grep 上游新代码确认发布点、
    `GetContextWithCancel` 与两个拉取器的 `client :=` 行没变形、
    两处 `normalizeCacheControlTTL(body)` 调用仍在且第 11 条的调用点
    排在它前面、`GetClaudeModels` 与 `LookupStaticModelInfo` 仍从
-   `getModels()` 读 claude 段；grep `slimproxy patch` 核对齐全）
+   `getModels()` 读 claude 段、`utls_client.go` 删掉上游的
+   `getOrCreateConnection` / `createConnection` 并按第 15 条改 `pending`
+   类型、加 `rootCAs`、`RoundTrip` 传 `req.Context()`；grep `slimproxy patch`
+   核对齐全）
 4. 仓库根目录 `go build ./... && go test ./...`。**不要**写
    `go test ./third_party/...`：本目录是嵌套 module，根目录的包通配符
    进不来——那条命令只会打一行 warning 然后 exit 0，一个 fork 测试都
@@ -201,8 +279,8 @@ Claude Code 的 13 个请求全部是本地 502，一个都没发到上游。配
    两个 EnsurePublished 测试——上游自己的 xai TTFT 断言在 Windows 上
    会因时钟粒度偶发翻红）、第 6 条的三个 ctx 重挂守卫、第 8/9 条的六个
    目录客户端守卫、第 12 条的九个缓存 TTL 守卫、第 14 条的四个固定 Claude
-   模型守卫，并核对第 5 步的版本同步。每条守卫都用 `-v` 跑并逐个
-   核对 `--- PASS:` 行：只看退出码会在测试文件被升级冲掉时假绿——
+   模型守卫、第 16 条的九个 utls 建连守卫，并核对第 5 步的版本同步。每条
+   守卫都用 `-v` 跑并逐个核对 `--- PASS:` 行：只看退出码会在测试文件被升级冲掉时假绿——
    `go test -run` 对空匹配打印 `[no tests to run]` 然后 exit 0。
    要手工全量跑上游套件时：`cd third_party/CLIProxyAPI && go test ./...`。
 5. slimproxy 根 `go.mod` 的 require 版本号同步改，**并且改本文件第一段
@@ -217,5 +295,8 @@ Claude Code 的 13 个请求全部是本地 502，一个都没发到上游。配
 经 `util.SetProxy` 建客户端，第 7-9 条可撤——slimproxy 侧改为直接调
 上游的入口即可。上游若自己提供按客户端改写缓存 ttl 的配置项（可提 PR，
 理由与实测数据见第 10-12 条前的说明），第 10-12 条可撤——slimproxy 的
-`claude-code-cache-ttl` 改为映射到上游的键即可。全部补丁都撤掉后，删除
+`claude-code-cache-ttl` 改为映射到上游的键即可。上游若让 utls round tripper
+的建连跟随请求 ctx、逐次限时、并在请求写出之前重试，且 HTTP/2 连接带 PING
+探活与空闲关闭（可提 PR，理由与实测数据见第 15 条前的说明），第 15-16 条
+可撤。全部补丁都撤掉后，删除
 本目录并移除 go.mod 的 replace 行。
