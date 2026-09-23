@@ -104,6 +104,11 @@ func TestLogStatsUploadThroughput(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("-stats 缺 %q：\n%s", want, out)
 		}
+		// 计时起点在请求头之后，随请求头先到的字节只计数不计时——这个偏向
+		// 要写在运维看得见的地方，而不是只留在代码注释里。
+		if lean := "可能略偏高"; !strings.Contains(out, lean) {
+			t.Fatalf("-stats 吞吐行没说明它偏高的方向（缺 %q）：\n%s", lean, out)
+		}
 	})
 
 	t.Run("nothing rated", func(t *testing.T) {

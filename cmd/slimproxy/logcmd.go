@@ -159,10 +159,14 @@ func writeJournalSummary(cx *cliContext, s journal.Summary, since time.Duration)
 	// The coverage is printed with the figure because it is a subset: rows
 	// without a size, or whose upload was too short to be the link talking,
 	// are left out, and a bare rate would read as describing every request.
+	// So is its lean: the clock starts once the headers are parsed, so body
+	// bytes that came in with them are counted but not timed, and the rate
+	// reads high by that much -- the floor keeps it small, not zero (see
+	// journal.MinRatedUploadMs).
 	if s.UploadRated > 0 {
 		fmt.Fprintf(cx.stdout, i18n.T(
-			"  上传吞吐 %s（%d/%d 个请求：只计记有入站字节且上传腿 ≥%dms 的，总字节÷总上传时长）\n",
-			"  upload throughput %s (%d of %d requests: only those with a body size and an upload leg ≥%dms; total bytes ÷ total upload time)\n"),
+			"  上传吞吐 %s（%d/%d 个请求：只计记有入站字节且上传腿 ≥%dms 的，总字节÷总上传时长；随请求头先到的字节不计时，可能略偏高）\n",
+			"  upload throughput %s (%d of %d requests: only those with a body size and an upload leg ≥%dms; total bytes ÷ total upload time; bytes that came in with the headers are not timed, so it may read slightly high)\n"),
 			kbRate(s.UploadKBps), s.UploadRated, s.Requests, journal.MinRatedUploadMs)
 	}
 	// The cache verdict, stated rather than left to be computed from two
@@ -224,9 +228,11 @@ func requestStatus(e journal.Event) string {
 //
 // The body size rides on the upload leg (传1.4s·2.0MB) because the pair is
 // the rate: 5s of upload is 60KB/s for a 300KB body and 1MB/s for a 5MB one.
-// Rows written before in_kb existed render exactly as they always did; a size
-// with no leg (sub-ms upload) keeps the leg's dash rather than dropping the
-// size.
+// Rows written before in_kb existed render exactly as they always did. A size
+// with no leg keeps the leg's dash (传—·5KB) rather than dropping the size, and
+// the dash covers two cases the journal cannot tell apart: an upload under a
+// millisecond, whose size is the whole body, or a body dropped before EOF,
+// whose size is only the part that was read.
 func netCell(e journal.Event) string {
 	var parts []string
 	if e.UploadMs > 0 || e.InKB > 0 {

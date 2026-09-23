@@ -88,6 +88,19 @@ func TestHandleUsageMergesNetTimings(t *testing.T) {
 		t.Fatalf("BodyBytes = %d, want 1234567", got.BodyBytes)
 	}
 
+	// 没读到 EOF 就被丢下的 body：上传腿缺席，字节数照样带进样本——两者各报
+	// 各的，不能拿「有没有上传腿」去决定字节数算不算（那样一个中途断掉的
+	// body 就什么都没留下）。
+	partial := NewNetTimings(time.Now())
+	partial.AddBodyBytes(65_536)
+	c.HandleUsage(WithNetTimings(context.Background(), partial), cliproxyusage.Record{Model: "m"})
+	if got.Upload != 0 {
+		t.Fatalf("partial body Upload = %v, want 0（没到 EOF）", got.Upload)
+	}
+	if got.BodyBytes != 65_536 {
+		t.Fatalf("partial body BodyBytes = %d, want 65536（已读部分不得因缺上传腿而丢）", got.BodyBytes)
+	}
+
 	// 没经过中间件的请求（直连引擎测试、无 ctx 场景）安静地保持零值。
 	c.HandleUsage(context.Background(), cliproxyusage.Record{Model: "m"})
 	if got.Upload != 0 || got.WriteBlock != 0 || got.BodyBytes != 0 {

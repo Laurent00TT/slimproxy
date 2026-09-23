@@ -280,6 +280,50 @@ func TestMeterBodyCountsAbandonedBody(t *testing.T) {
 	}
 }
 
+// failingTailReader 先整块送达 head，再把 tail 与 err 一起交出——客户端在
+// body 中途断开时 net/http 的 body 就是这样：末块字节随 io.ErrUnexpectedEOF
+// 一起到。
+type failingTailReader struct {
+	head, tail []byte
+	err        error
+	step       int
+}
+
+func (r *failingTailReader) Read(p []byte) (int, error) {
+	r.step++
+	switch r.step {
+	case 1:
+		return copy(p, r.head), nil
+	case 2:
+		return copy(p, r.tail), r.err
+	default:
+		return 0, r.err
+	}
+}
+
+// 随非 EOF 错误一起交出的字节也是送达的字节（io.Reader：调用方应先处理
+// n>0 再看 err），必须计入；但这不是 EOF，上传腿不得因此落下终点——中途
+// 断开的 body 没有「传完」的时刻。
+func TestMeterBodyCountsBytesDeliveredWithError(t *testing.T) {
+	nt := metrics.NewNetTimings(time.Now())
+	inner := &failingTailReader{head: []byte(strings.Repeat("h", 40)), tail: []byte("tail!"), err: io.ErrUnexpectedEOF}
+	b := &meterBody{inner: io.NopCloser(inner), nt: nt}
+
+	buf := make([]byte, 64)
+	if n, err := b.Read(buf); n != 40 || err != nil {
+		t.Fatalf("first read = (%d, %v), want (40, nil)", n, err)
+	}
+	if n, err := b.Read(buf); n != 5 || err != io.ErrUnexpectedEOF {
+		t.Fatalf("second read = (%d, %v), want (5, ErrUnexpectedEOF)——测试桩自身不对", n, err)
+	}
+	if n := nt.BodyBytes(); n != 45 {
+		t.Fatalf("BodyBytes = %d, want 45（随错误交出的末块也要计）", n)
+	}
+	if nt.Upload() != 0 {
+		t.Fatalf("非 EOF 错误结束的 body 记了上传腿 %v，want 0", nt.Upload())
+	}
+}
+
 // 两个抽干者都在 meter 之上从内存回放 body（fidelity 的 MultiReader 回放、
 // earlyflush 的 bytes.Reader），计数必须仍是网络送达量本身：回放不经过
 // meter，所以不得被数第二遍。body 超过 fidelity 的 2 MiB 读取上限，走的是
