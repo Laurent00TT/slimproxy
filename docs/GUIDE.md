@@ -636,6 +636,14 @@ models: []            # 模型白名单，空=全部
   失败都只尝试一次（对 v7.2.103 实测，`TestUpstreamRetry_*` 特征测试钉住此
   行为）。它只在多凭据、或 429 带 `retry-after` 时才可能生效。写 0 则连这个
   循环也整个关掉——上游库对这一项没有默认值。
+  唯一真会发生的重试在这个循环下面一层：到 Anthropic 或 chatgpt.com 的**建连**
+  失败——拨号、代理的 CONNECT、TLS 握手，请求一个字节都还没发——由引擎内部
+  重试，每次限 15 秒、共 3 次、间隔 1 秒和 3 秒，客户端一断开就停。这一步不会
+  让上游执行或计费两次；请求一旦发出，之后的失败仍只尝试一次。每次建连失败在
+  应用日志里记一行 `utls: connection setup to … failed in <dial|handshake|h2>
+  phase on attempt n/3 after …`，重试成功另记 `set up on attempt n/3`。事件流
+  只记归类（`slimproxy log` 的 connect / tls / timeout），建连卡在哪一段、卡了
+  多久，要看这一行。
 
 - **`claude-code-cache-ttl: "1h"` 让长轮次不再整段重写对话。** Anthropic 的提示缓存
   默认只活 5 分钟，而且从上一次读到该前缀的**请求开始**计时——生成回答的时间也算。

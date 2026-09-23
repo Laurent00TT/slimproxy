@@ -331,13 +331,25 @@ contract:
   deployment attempts every failure class exactly once regardless of the value —
   measured against v7.2.103, pinned by the `TestUpstreamRetry_*` characterization
   tests. At 0 the loop is skipped entirely; CLIProxyAPI ships no default for it.
+  The one retry that does happen sits a layer below that loop: a failed connection
+  *setup* to Anthropic or chatgpt.com — dial, proxy CONNECT, TLS handshake, before a
+  byte of the request is sent — is retried inside the engine, each attempt bounded at
+  15s, three attempts in all with 1s and 3s pauses, abandoned as soon as the client
+  goes away. A resend there cannot run or bill the request twice; once the request is
+  on the wire, a failure is still attempted once. Each failed setup is logged as
+  `utls: connection setup to … failed in <dial|handshake|h2> phase on attempt n/3` —
+  the journal keeps only the cause, so that line is where a stall's location shows.
 - **`stream-idle-timeout` cuts dead streams loose.** A streaming response that sends nothing
   for the window (90s by default) is severed and the client gets an explicit timeout to retry
   against. It exists because a stream can die silently mid-flight — no FIN, no RST, no error —
   and neither upstream nor this proxy had a read deadline, so the client waited out its own
   stall detector: five to nine minutes per occurrence, measured 2026-08-01. Healthy streams are
   never quiet that long (the upstream emits SSE pings through thinking pauses). `0` selects the
-  default; a negative value turns the guard off and restores the indefinite hang.
+  default; a negative value turns the guard off. Beneath it, the engine PINGs an HTTP/2
+  connection to Anthropic or chatgpt.com after 30s without a frame and drops it if no ack
+  comes within 15s, so a connection that is actually dead fails within ~45s of its last frame
+  even with the guard off. What only the guard catches is an upstream that stays connected but
+  stops sending — with the guard off, that still hangs indefinitely.
 - **`stream-early-flush` buys streaming requests out of Cloudflare's 100s guillotine.** Behind
   a Cloudflare tunnel, an origin that shows no response headers within ~100 seconds is severed
   as a 524 (the limit is fixed on free/Pro plans) — and the upstream handler writes nothing
