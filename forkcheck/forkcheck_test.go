@@ -189,6 +189,24 @@ func TestForkUtlsSetupGuard(t *testing.T) {
 		})
 }
 
+// TestForkCPATraceUnwrapGuard runs the fork's guard test for the CPA trace
+// writer's Unwrap (SLIMPROXY_PATCHES.md 第 17-18 条).
+//
+// What it defends: the engine's CPA trace writer sits between every slimproxy
+// writer and net/http, so without its Unwrap the early-flush middleware's full
+// duplex switch fails for every request, and a desperation preamble written
+// mid-upload makes net/http discard the rest of the body -- the 20 uploads
+// killed on 2026-09-23. The slimproxy-side test
+// (proxy/earlyflush_duplex_test.go TestEarlyFlushFullDuplexThroughBuiltChain)
+// catches the same loss end to end through Build; this one names the writer.
+func TestForkCPATraceUnwrapGuard(t *testing.T) {
+	runForkGuard(t, "fork 的 CPA trace writer Unwrap 守卫（补丁文件可能被升级冲掉了，desperation 预发头会重新掐断上传）",
+		[]string{"./internal/logging/"},
+		[]string{
+			"TestCPATraceWriterPassesFullDuplexThrough",
+		})
+}
+
 // TestForkBaselineVersionMatchesPatchDoc pins the version bookkeeping nothing
 // else enforces: with a directory replace active, go.mod's require version is
 // pure annotation (the build always comes from third_party/), and `slimproxy

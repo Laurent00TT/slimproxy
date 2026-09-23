@@ -16,6 +16,14 @@ First public release.
   as 524s at its fixed ~100s header deadline. Failures after the preamble
   travel as in-stream SSE error events; a four-minute silence watchdog bounds
   the heartbeat. On by default; `stream-early-flush` tunes or disables it.
+- A preamble sent while the request body is still uploading (the 80s
+  desperation case) no longer kills that upload. Go's HTTP server took the
+  first response byte to mean the body was no longer wanted: with under 256KB
+  left it threw the rest away and the request ended as an in-stream 502, after
+  80–124s of uploading, and the client sent the whole 0.5–2MB body again — 20
+  requests on 2026-09-23 ended this way. The server now keeps reading while the
+  response streams (full duplex), and a body that does stop arriving after the
+  preamble is recorded as an interrupted upload, not as an upstream failure.
 - `claude-code-cache-ttl: "1h"` rewrites every prompt-cache breakpoint Claude
   Code sends to the one-hour lifetime, inside the engine's executor. The
   default 5 minutes are timed from the start of the request that last touched

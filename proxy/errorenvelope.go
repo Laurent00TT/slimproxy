@@ -108,6 +108,16 @@ type envelopeWriter struct {
 	overflowed bool
 }
 
+// Unwrap hands http.ResponseController the writer underneath. The early-flush
+// middleware's full duplex switch has to pass through this wrapper to reach
+// net/http; without it the switch fails for every request and desperation
+// preambles kill the uploads they were sent to save (see earlyflush.go).
+// Flush is implemented here, so a controller's Flush still stops at the
+// buffering decision rather than going around it.
+func (w *envelopeWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 // decide is called once, as late as possible but before any byte is written.
 func (w *envelopeWriter) decide(code int) {
 	if w.decided {

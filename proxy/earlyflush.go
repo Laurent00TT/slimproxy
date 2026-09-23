@@ -62,6 +62,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 
 	"github.com/Laurent00TT/slimproxy/i18n"
@@ -162,6 +163,15 @@ type earlyFlushNotes struct {
 	// timedOut fires when the silence watchdog ends a stream the upstream
 	// never spoke on.
 	timedOut func(silence time.Duration)
+	// uploadCut fires when the request body stopped arriving after the
+	// preamble had committed the response. Kept apart from translated
+	// because no upstream was ever contacted: filing it as "upstream failed
+	// after the preamble" is how 20 killed uploads on 2026-09-23 read as
+	// upstream faults.
+	uploadCut func(received, declared int64, err error)
+	// fullDuplexUnavailable fires when the full duplex switch could not
+	// reach net/http. err names the writer where the unwrap chain stopped.
+	fullDuplexUnavailable func(err error)
 }
 
 // streamVerdict is what the request body has established about streaming.
@@ -234,6 +244,14 @@ func (s *bodySniffer) readAll(r io.Reader) ([]byte, error) {
 	return s.buf.Bytes(), nil
 }
 
+// received reports how many body bytes arrived, for the record of an upload
+// that ended early.
+func (s *bodySniffer) received() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return int64(s.buf.Len())
+}
+
 // verdict reports what the bytes so far say about streaming. Called from the
 // timer goroutine; the scan runs under the lock, briefly pausing the upload
 // copy loop, which at one call per request is noise.
@@ -293,6 +311,39 @@ func EarlyFlushMiddleware(delay time.Duration, notes earlyFlushNotes) gin.Handle
 			cancelHandler:  cancel,
 			shadow:         cloneHeader(c.Writer.Header()),
 		}
+		// Full duplex, switched on before the desperation timer is armed.
+		//
+		// Without it net/http takes the first response write to mean the
+		// handler is done with the body. The write first waits for the body's
+		// lock, which the sniff holds while parked in Read -- so the preamble
+		// leaves late -- and then, with under 256KB still unread, closes the
+		// body: the rest is drained into io.Discard before the preamble goes
+		// out, and the sniff's next Read fails with ErrBodyReadAfterClose.
+		// With more unread it forces Connection: close instead. The first
+		// shape ended as an in-stream 502 after 80-124s of uploading, and
+		// the client resent the whole body: all 20 desperation preambles on
+		// 2026-09-23 that met a 502 within 1ms. The same day 14 preambles
+		// went out mid-upload and those requests succeeded, so the one
+		// client (cloudflared) takes a response that starts before its body
+		// is sent.
+		//
+		// Here, not at the top of the middleware and not inside flushNow.
+		// The timer is the only writer in this path that can run while the
+		// body is unread -- every other write waits for readAll's EOF, where
+		// full duplex changes nothing -- so this is the narrowest scope that
+		// covers it. Requests out of scope keep net/http's default, which
+		// exists for clients that deadlock when a response starts before
+		// they have finished sending (Go issue 15527). And here it runs on
+		// the request goroutine, once, before any write can race it.
+		//
+		// Through w, so the chain walked is the one the preamble writes
+		// through. A failure is reported, not fatal: the preamble then
+		// behaves as it did before this call existed -- still a save with a
+		// large remainder left, still the drain without one -- and the
+		// report names the writer that broke the chain.
+		if err := enableFullDuplex(w); err != nil && notes.fullDuplexUnavailable != nil {
+			notes.fullDuplexUnavailable(err)
+		}
 		// Desperation: if the body is STILL uploading this close to the
 		// edge's ~100s deadline, commit the preamble without waiting for the
 		// full sniff. Same evening, same journal: two uploads outlived the
@@ -319,6 +370,9 @@ func EarlyFlushMiddleware(delay time.Duration, notes earlyFlushNotes) gin.Handle
 				// The preamble is already on the wire for a body that never
 				// finished arriving; end the stream honestly rather than
 				// handing the handler a broken body behind committed headers.
+				// Marked first, so finish files it as the upload failure it
+				// is and not as an upstream failure translated in-stream.
+				w.uploadFailed(sniff.received(), c.Request.ContentLength, err)
 				w.finish()
 				cancel()
 				c.Abort()
@@ -432,9 +486,48 @@ type earlyFlushWriter struct {
 	// truth rather than the wire's unconditional 200.
 	intended int
 	errBuf   bytes.Buffer
+	// uploadErr is set when the body stopped arriving after the preamble;
+	// finish reports that instead of a translated upstream failure.
+	uploadErr                      error
+	uploadReceived, uploadDeclared int64
 
 	hbStop chan struct{}
 	hbDone chan struct{}
+}
+
+// Unwrap hands http.ResponseController the writer underneath, which is how
+// the middleware's full duplex switch reaches net/http through this wrapper.
+//
+// It opens no side door around the state machine: the controller stops at
+// the first writer implementing a method, and the two that touch the wire
+// stop here -- Flush is implemented below, Hijack is promoted exactly as it
+// was before. What passes through are the controls this wrapper does not
+// have (full duplex, deadlines), and they write nothing.
+func (w *earlyFlushWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+// enableFullDuplex lets the handler keep reading the request body after the
+// response has started; see the call site for why the desperation preamble
+// needs it.
+//
+// On failure the error names the writer where the unwrap chain stopped:
+// ErrNotSupported alone does not say which wrapper lost its Unwrap, and that
+// is the only thing an operator needs to fix it.
+func enableFullDuplex(w http.ResponseWriter) error {
+	err := http.NewResponseController(w).EnableFullDuplex()
+	if err == nil {
+		return nil
+	}
+	last := w
+	for {
+		u, ok := last.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			break
+		}
+		last = u.Unwrap()
+	}
+	return fmt.Errorf("%w (the writer chain stops at %T)", err, last)
 }
 
 // commitShadowLocked moves the handler's header state onto the real map.
@@ -483,6 +576,15 @@ func (w *earlyFlushWriter) tryDisarm() bool {
 		w.timer.Stop()
 	}
 	return true
+}
+
+// uploadFailed records that the stream is ending because the request body
+// stopped arriving, before finish runs.
+func (w *earlyFlushWriter) uploadFailed(received, declared int64, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.uploadErr = err
+	w.uploadReceived, w.uploadDeclared = received, declared
 }
 
 // rearm replaces the desperation deadline with what is left of the real
@@ -739,6 +841,15 @@ func (w *earlyFlushWriter) finish() {
 	_, _ = w.ResponseWriter.Write(sseErrorFrame(status, w.errBuf.Bytes()))
 	w.ResponseWriter.Flush()
 
+	if w.uploadErr != nil {
+		// Same frame for the client -- a retryable api_error is what it
+		// needs either way -- but not the same record: nothing upstream
+		// failed, the body never finished arriving.
+		if w.notes.uploadCut != nil {
+			w.notes.uploadCut(w.uploadReceived, w.uploadDeclared, w.uploadErr)
+		}
+		return
+	}
 	if w.notes.translated != nil {
 		w.notes.translated(status)
 	}
@@ -760,6 +871,27 @@ func sseErrorFrame(status int, body []byte) []byte {
 	frame.Write(body)
 	frame.WriteString("\n\n")
 	return frame.Bytes()
+}
+
+// earlyFlushNotes bundles the middleware's reporters against this Runtime.
+// Note is nil-safe, so the bundle is correct with or without a journal.
+//
+// A method rather than a literal inside Build, so a test can hold every field
+// to non-nil: the middleware treats a nil note as "not wanted" -- tests pass
+// partial bundles on purpose -- so an unwired one fails silently. For
+// uploadCut that silence is total: finish returns before translated once an
+// upload failure is marked, so an interrupted upload would leave no record at
+// all, less than the misfiled 502 that note replaced.
+// TestBuildWiresEveryEarlyFlushNote pins both this and Build's use of it.
+func (r *Runtime) earlyFlushNotes() earlyFlushNotes {
+	return earlyFlushNotes{
+		flushed:               r.noteEarlyFlush,
+		desperationHeld:       r.noteDesperationHeld,
+		translated:            r.noteEarlyFlushTranslated,
+		timedOut:              r.noteEarlyFlushTimeout,
+		uploadCut:             r.noteEarlyFlushUploadCut,
+		fullDuplexUnavailable: r.noteFullDuplexUnavailable,
+	}
 }
 
 // noteEarlyFlush records a preamble commit on the request timeline.
@@ -812,6 +944,39 @@ func (r *Runtime) noteEarlyFlushTranslated(status int) {
 		Detail: fmt.Sprintf(i18n.T(
 			"预发响应头之后上游失败（HTTP %d），已转为流内 error 事件送达",
 			"upstream failed after the preamble (HTTP %d); delivered as an in-stream error event"), status),
+	})
+}
+
+// noteEarlyFlushUploadCut records a stream ended by its own request body.
+func (r *Runtime) noteEarlyFlushUploadCut(received, declared int64, err error) {
+	if r == nil {
+		return
+	}
+	r.Note(journal.Event{
+		Kind:  journal.KindHealth,
+		State: "earlyflush",
+		Detail: fmt.Sprintf(i18n.T(
+			"预发响应头之后上传未完成即中断（收到 %d / %d 字节：%v）；上游从未被联系，已发流内 error 事件结束请求",
+			"upload ended before the body was complete, after the preamble (%d of %d bytes: %v); no upstream was contacted, stream ended with an in-stream error event"), received, declared, err),
+	})
+}
+
+// noteFullDuplexUnavailable reports a full duplex switch that did not reach
+// net/http.
+//
+// Once per process, and it says so. The cause is structural -- a writer in
+// the chain without Unwrap -- so it fails the same way for every request, and
+// a line per request would bury the rest of the log without adding anything.
+func (r *Runtime) noteFullDuplexUnavailable(err error) {
+	if r == nil {
+		return
+	}
+	r.fullDuplexWarned.Do(func() {
+		detail := fmt.Sprintf(i18n.T(
+			"无法为请求开启全双工（%v）：desperation 预发头会像修复前一样让 net/http 在上传途中收尾——剩余不足 256KB 时丢弃剩余 body、请求以流内 502 结束，否则强制 Connection: close。每个进程只报这一次",
+			"could not enable full duplex for a request (%v): a desperation preamble will again make net/http end the body mid-upload -- under 256KB left, the rest is discarded and the request ends as an in-stream 502; otherwise Connection: close is forced. Reported once per process"), err)
+		log.Warnf("slimproxy: %s", detail)
+		r.Note(journal.Event{Kind: journal.KindHealth, State: "earlyflush", Detail: detail})
 	})
 }
 

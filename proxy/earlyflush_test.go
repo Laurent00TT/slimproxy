@@ -15,6 +15,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -404,6 +405,89 @@ func TestEarlyFlushDesperationResidueSurvives(t *testing.T) {
 	}
 	if got := streamVerdict(sawVerdict.Load()); got != verdictUnknown {
 		t.Errorf("flushed verdict = %v, want verdictUnknown", got)
+	}
+}
+
+// failingUpload delivers its first bytes, stalls, then fails the read -- a
+// body that stops arriving after desperation has already committed the
+// preamble.
+type failingUpload struct {
+	first io.Reader
+	pause time.Duration
+	err   error
+}
+
+func (f *failingUpload) Read(p []byte) (int, error) {
+	if n, err := f.first.Read(p); n > 0 || err != io.EOF {
+		return n, err
+	}
+	time.Sleep(f.pause)
+	return 0, f.err
+}
+
+// TestEarlyFlushUploadCutIsNotAnUpstreamFailure: a body that stops arriving
+// after the preamble ends the stream with an error event, as before, but is
+// recorded as the upload failure it is. It used to be filed through
+// translated -- "upstream failed after the preamble (HTTP 502)" -- which is
+// how the 20 uploads killed on 2026-09-23 read as upstream faults although no
+// upstream was ever contacted.
+func TestEarlyFlushUploadCutIsNotAnUpstreamFailure(t *testing.T) {
+	oldD := earlyFlushDesperation
+	earlyFlushDesperation = 60 * time.Millisecond
+	defer func() { earlyFlushDesperation = oldD }()
+
+	var translated atomic.Int32
+	type cutReport struct {
+		received, declared int64
+		err                error
+	}
+	cuts := make(chan cutReport, 2)
+	notes := earlyFlushNotes{
+		translated: func(int) { translated.Add(1) },
+		uploadCut: func(received, declared int64, err error) {
+			cuts <- cutReport{received, declared, err}
+		},
+	}
+
+	prefix := `{"stream":true,"messages":[`
+	declared := int64(len(prefix) + 4096)
+	readErr := errors.New("body read failed mid-upload")
+	var ran atomic.Bool
+
+	r := gin.New()
+	r.Use(EarlyFlushMiddleware(earlyFlushTestDelay, notes))
+	r.POST("/v1/messages", func(c *gin.Context) { ran.Store(true) })
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", &failingUpload{
+		first: strings.NewReader(prefix),
+		pause: 4 * earlyFlushDesperation,
+		err:   readErr,
+	})
+	req.ContentLength = declared
+	r.ServeHTTP(rec, req)
+
+	if ran.Load() {
+		t.Error("handler ran on a body that never finished arriving")
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Fatalf("Content-Type = %q; desperation should have committed the preamble first", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "event: error") {
+		t.Errorf("body %q: the stream must still end with an error event", rec.Body.String())
+	}
+	if n := translated.Load(); n != 0 {
+		t.Errorf("translated fired %d times：上传中断被记成了「预发头之后上游失败」，而上游从未被联系", n)
+	}
+	select {
+	case got := <-cuts:
+		if got.received != int64(len(prefix)) || got.declared != declared {
+			t.Errorf("uploadCut reported %d/%d bytes, want %d/%d", got.received, got.declared, len(prefix), declared)
+		}
+		if !errors.Is(got.err, readErr) {
+			t.Errorf("uploadCut err = %v, want the body read's own error", got.err)
+		}
+	default:
+		t.Fatal("uploadCut never fired：上传中断没有留下自己的记录")
 	}
 }
 
