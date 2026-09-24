@@ -78,8 +78,8 @@ key 认证。OAuth 凭据留在本机。模型 ID 从代理目录选择，并以
 
 把 [配置示例](../deploy/codex.config.example.toml) 中的字段合并到公司客户端的
 `~/.codex/config.toml`，将 `base_url` 换成实际隧道地址加 `/v1`。默认模型使用已
-实测的 `gpt-6-astra`，默认推理强度为 Extra High（`xhigh`）。前述延迟基准使用
-`low`，不代表 `xhigh` 下的延迟。
+实测的 `gpt-6-astra`，默认推理强度为 High（`high`）。前述延迟基准使用
+`low`，不代表 `high` 下的延迟。
 自定义 provider 使用的 `env_key`、`wire_api`、`supports_websockets` 等字段见
 [OpenAI 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。
 
