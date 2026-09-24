@@ -9,7 +9,7 @@
   日志与终端显示改进。非空 `models` 配置被拒绝，避免误报尚未实现的白名单。
 - 引擎已有 Codex OAuth 登录与刷新、HTTP/SSE Responses、WebSocket 和 compact。
 - 根模块 `go test ./...` 现在通过 `TestForkCodexCompatibilityBaseline` 执行
-  17 项 Codex 回归测试，覆盖输入、工具参数、流结束、压缩和 WebSocket 状态。
+  18 项 Codex 回归测试，覆盖输入、工具参数、流结束、取消计量、压缩和 WebSocket 状态。
   测试使用本地模拟上游，不消耗账号配额，也不能证明真实账号或公网链路可用。
 - 真实 OAuth 登录与下表中的本地、公网协议验证已完成。公司端客户端、长任务和
   故障恢复仍待验收；不能据此宣称全部生产场景通过。
@@ -72,9 +72,13 @@ key 认证。OAuth 凭据留在本机。模型 ID 从代理目录选择，并以
 
 ### 公司端接入配置
 
+后续已完成 Astra 的短时稳定性与延迟测量，见
+[2026-09-24 基准报告](CODEX_BENCHMARK_2026-09-24.md)。报告包含真实工具循环、
+并发 WebSocket、压缩续接，以及本轮修复的验证和部署状态。
+
 把 [配置示例](../deploy/codex.config.example.toml) 中的字段合并到公司客户端的
 `~/.codex/config.toml`，将 `base_url` 换成实际隧道地址加 `/v1`。模型先使用本次
-实测的 `gpt-6-sol`，其他模型需要分别验证权限；low 是本次测试值，可按任务调整。
+实测的 `gpt-6-sol` 或 `gpt-6-astra`，其他模型需要分别验证权限；low 是本次测试值，可按任务调整。
 自定义 provider 使用的 `env_key`、`wire_api`、`supports_websockets` 等字段见
 [OpenAI 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。
 

@@ -348,6 +348,23 @@ Responses 立即变成 503。`gpt-5.5` 的独立 compact 接口也返回 404；�
     接入此测试。已变异验证：调用点恢复为 `newCodexStatusErr` 后，第一个场景
     因 `auth_unavailable: no auth available` 失败，其余四个场景通过。
 
+2026-09-24 的 Codex 稳定性检查发现：SSE 在上游等待期间被客户端取消时，
+执行器直接退出而不发布 usage；成功终止事件缺少 usage 时也没有请求记录。
+本地模拟上游复现了两种漏记，完整 usage 与无终止事件 EOF 则已有正确记录。
+
+21. `internal/runtime/executor/slimproxy_codex_stream_usage.go`（新增文件）
+    在流式执行 goroutine 退出时补齐记录：收到成功终止事件但没有 usage 时
+    EnsurePublished；终止前 context 被取消时 PublishFailure。已有发布由
+    UsageReporter 的 once 保护，不重复计量，也不将已完成的请求改记为取消。
+    `codex_executor_stream.go` 只增加退出调用点及终止状态标记，带
+    `slimproxy patch` 注释。不重试请求，不改动凭据冷却。
+
+22. `internal/runtime/executor/slimproxy_codex_stream_usage_test.go`（新增文件）
+    本地 HTTP 上游覆盖等待期间取消、完成但无 usage、完整 usage 和缺失终止
+    事件 EOF。断言上游取消、goroutine 退出，以及每次请求恰好一条正确记录。
+    根模块 Codex 基线接入此守卫。变异验证：禁用第 21 条的两个发布调用后，
+    前两个场景都因零记录失败；恢复后四个场景全部通过。
+
 # 升级上游版本的流程
 
 1. `go mod download github.com/router-for-me/CLIProxyAPI/v7@<新版本>`
@@ -360,7 +377,8 @@ Responses 立即变成 503。`gpt-5.5` 的独立 compact 接口也返回 404；�
    `internal/registry/slimproxy_claude_extras{,_test}.go`、
    `internal/runtime/executor/helps/slimproxy_utls_setup{,_test}.go`、
    `internal/logging/slimproxy_cpa_trace_unwrap{,_test}.go`、
-   `internal/runtime/executor/slimproxy_codex_compact{,_test}.go`
+   `internal/runtime/executor/slimproxy_codex_compact{,_test}.go`、
+   `internal/runtime/executor/slimproxy_codex_stream_usage{,_test}.go`
 3. 按上面的清单重打全部补丁（grep 上游新代码确认发布点、
    `GetContextWithCancel` 与两个拉取器的 `client :=` 行没变形、
    两处 `normalizeCacheControlTTL(body)` 调用仍在且第 11 条的调用点
@@ -368,7 +386,8 @@ Responses 立即变成 503。`gpt-5.5` 的独立 compact 接口也返回 404；�
    `getModels()` 读 claude 段、`utls_client.go` 删掉上游的
    `getOrCreateConnection` / `createConnection` 并按第 15 条改 `pending`
    类型、加 `rootCAs`、`RoundTrip` 传 `req.Context()`；`executeCompact` 的错误
-   分支使用第 19 条的 request-scoped 包装；grep `slimproxy patch`
+   分支使用第 19 条的 request-scoped 包装；Codex 流式 goroutine 保留第 21 条
+   的退出调用点和终止状态标记；grep `slimproxy patch`
    核对齐全）
 4. 仓库根目录 `go build ./... && go test ./...`。**不要**写
    `go test ./third_party/...`：本目录是嵌套 module，根目录的包通配符
@@ -379,7 +398,7 @@ Responses 立即变成 503。`gpt-5.5` 的独立 compact 接口也返回 404；�
    会因时钟粒度偶发翻红）、第 6 条的三个 ctx 重挂守卫、第 8/9 条的六个
    目录客户端守卫、第 12 条的九个缓存 TTL 守卫、第 14 条的四个固定 Claude
    模型守卫、第 16 条的十一个 utls 建连守卫、第 18 条的 CPA trace writer
-   Unwrap 守卫、包含第 20 条的 17 项 Codex 兼容性守卫，并核对第 5 步的版本同步。每条守卫都用 `-v` 跑并逐个
+   Unwrap 守卫、包含第 20/22 条的 18 项 Codex 兼容性守卫，并核对第 5 步的版本同步。每条守卫都用 `-v` 跑并逐个
    核对 `--- PASS:` 行：只看退出码会在测试文件被升级冲掉时假绿——
    `go test -run` 对空匹配打印 `[no tests to run]` 然后 exit 0。
    要手工全量跑上游套件时：`cd third_party/CLIProxyAPI && go test ./...`。
@@ -401,5 +420,7 @@ Responses 立即变成 503。`gpt-5.5` 的独立 compact 接口也返回 404；�
 可撤。上游若给自己的 response writer 包装加上 Unwrap（可提 PR：
 ResponseController 文档本就要求包装者提供它），第 17-18 条可撤——编译报
 方法重复时就是信号。上游若能区分 compact 端点 404 与模型不可用，且第 20 条
-测试不再依赖本地调用点仍通过，第 19-20 条可撤。全部补丁都撤掉后，删除
+测试不再依赖本地调用点仍通过，第 19-20 条可撤。上游若补齐 Codex 流式取消
+及无 usage 终止事件的记录，且第 22 条测试不再依赖补丁仍通过，第 21-22 条
+可撤。全部补丁都撤掉后，删除
 本目录并移除 go.mod 的 replace 行。

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/Laurent00TT/slimproxy/i18n"
@@ -54,13 +55,53 @@ func ParseTunnelInfo(text string) Connectivity {
 		// A connector row starts with a UUID and carries further columns; the
 		// "ID:" summary line holds a UUID too but has only two fields.
 		if len(f) >= 4 && len(f[0]) == 36 && strings.Count(f[0], "-") == 4 {
-			c.Count++
+			// One row is one connector process, not one edge connection. The
+			// EDGE column aggregates that connector's live connections, e.g.
+			// "2xsin09, 1xsin12". Older versions emit bare colo names.
+			if len(f) < 6 {
+				return Connectivity{}
+			}
+			n, ok := countEdgeConnections(strings.Join(f[5:], ""))
+			if !ok {
+				return Connectivity{}
+			}
+			c.Count += n
 		}
 	}
 	if ip := findFakeIP(text); ip != "" {
 		c.FakeIP = ip
 	}
 	return c
+}
+
+func countEdgeConnections(edge string) (int, bool) {
+	count := 0
+	for _, entry := range strings.Split(edge, ",") {
+		n, colo := 1, entry
+		// Colos can contain x (lax10), so only a numeric prefix is a count.
+		if len(entry) > 0 && entry[0] >= '0' && entry[0] <= '9' {
+			prefix, suffix, ok := strings.Cut(entry, "x")
+			if !ok {
+				return 0, false
+			}
+			var err error
+			n, err = strconv.Atoi(prefix)
+			if err != nil || n < 0 {
+				return 0, false
+			}
+			colo = suffix
+		}
+		if len(colo) < 4 {
+			return 0, false
+		}
+		for i, ch := range colo {
+			if i < 3 && (ch < 'a' || ch > 'z') || i >= 3 && (ch < '0' || ch > '9') {
+				return 0, false
+			}
+		}
+		count += n
+	}
+	return count, true
 }
 
 // findFakeIP returns the first RFC 2544 address in the text, if any.

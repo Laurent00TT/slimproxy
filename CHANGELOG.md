@@ -4,6 +4,10 @@
 
 First public release.
 
+- Count Cloudflare edge connections from the aggregated EDGE column instead
+  of counting connector processes. Unknown column formats remain unknown.
+- Journal canceled Codex SSE requests and successful completions without
+  usage, while preserving exactly one usage record per request.
 - A Codex standalone compaction 404 no longer puts an otherwise usable model
   into a twelve-hour cooldown. The request still fails visibly; inference 404s
   and credential/quota failures retain their existing cooldown behavior.

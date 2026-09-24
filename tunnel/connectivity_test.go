@@ -18,7 +18,7 @@ CONNECTOR ID                         CREATED              ARCHITECTURE  VERSION 
 66666666-7777-4888-9999-aaaaaaaaaaaa 2026-07-25T15:37:12Z windows_amd64 2026.7.3  203.0.113.43 lax01
 `
 
-func TestParseTunnelInfoCountsConnectors(t *testing.T) {
+func TestParseTunnelInfoCountsLegacyEdges(t *testing.T) {
 	c := ParseTunnelInfo(realTunnelInfo)
 	if !c.Parsed {
 		t.Fatal("real output reported as unparseable")
@@ -27,6 +27,30 @@ func TestParseTunnelInfoCountsConnectors(t *testing.T) {
 	// be counted.
 	if c.Count != 2 {
 		t.Errorf("Count = %d, want 2", c.Count)
+	}
+}
+
+func TestParseTunnelInfoCountsAggregatedEdges(t *testing.T) {
+	text := `CONNECTOR ID CREATED ARCHITECTURE VERSION ORIGIN IP EDGE
+11111111-2222-4333-8444-555555555555 2026-09-24T11:00:00Z windows_amd64 2026.8.3 203.0.113.43 2xsin09, 1xsin12, 1xsin14
+66666666-7777-4888-9999-aaaaaaaaaaaa 2026-09-24T11:00:00Z linux_amd64 2026.8.3 203.0.113.44 1xlax10, 2xlax01
+`
+	c := ParseTunnelInfo(text)
+	if !c.Parsed || c.Count != 7 {
+		t.Fatalf("two connectors with seven edge connections: got %+v", c)
+	}
+}
+
+func TestParseTunnelInfoUnknownEdgesAreNotHealthy(t *testing.T) {
+	for _, edge := range []string{"", "unknown", "2x", "2xsin09,broken", "2xsin09,", "2xSIN09", "999999999999999999999999xsin09"} {
+		t.Run(edge, func(t *testing.T) {
+			text := "CONNECTOR ID CREATED ARCHITECTURE VERSION ORIGIN IP EDGE\n" +
+				"11111111-2222-4333-8444-555555555555 date arch version 203.0.113.43 " + edge + "\n"
+			c := ParseTunnelInfo(text)
+			if c.Parsed || c.Count != 0 {
+				t.Fatalf("unknown EDGE column must not invent a connection count: %+v", c)
+			}
+		})
 	}
 }
 

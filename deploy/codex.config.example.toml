@@ -1,7 +1,8 @@
 # Merge these values into the company client's ~/.codex/config.toml.
 # Replace the example origin and supply a slimproxy inbound key in the
 # SLIMPROXY_API_KEY environment variable visible to that client process.
-model = "gpt-6-sol"
+# Both gpt-6-sol and gpt-6-astra passed the documented proxy checks.
+model = "gpt-6-astra"
 model_provider = "slimproxy"
 model_reasoning_effort = "low"
 
