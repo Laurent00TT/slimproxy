@@ -4,7 +4,7 @@
 # Default to Astra, verified by the documented proxy checks.
 model = "gpt-6-astra"
 model_provider = "slimproxy"
-model_reasoning_effort = "low"
+model_reasoning_effort = "xhigh"
 
 [model_providers.slimproxy]
 name = "Home slimproxy"
