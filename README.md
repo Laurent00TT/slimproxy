@@ -406,11 +406,15 @@ comments.
 
 ## Open decision
 
-`proxy.Config.AllowModel` currently does exact matching on `models:`, which is safe but
-brittle — upstream names carry dated suffixes and this proxy also sees names with a thinking
-suffix appended (`gpt-5.5(high)`). Prefix matching, suffix-stripping, and globs each trade
-convenience against over-exposure. It is a real access-control boundary, so the policy is
-left marked `TODO(you)` in `proxy/config.go` rather than guessed.
+`models` is reserved: a non-empty list is rejected at startup and by `check`.
+Leave it empty (`models: []`) to serve all models exposed by the loaded credentials.
+Earlier builds displayed an exact-match allowlist, but never enforced it in the
+serving path. Rejecting the setting prevents that false access-control guarantee.
+
+Implementing the allowlist still requires choosing a matching policy: exact names,
+dated suffixes, and reasoning suffixes (`gpt-5.5(high)`) have different tradeoffs.
+The decision remains marked `TODO(you)` in `proxy/config.go`; enforcement belongs
+in the engine's model resolution for every client dialect.
 
 ## The engine fork
 

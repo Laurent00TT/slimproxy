@@ -254,11 +254,9 @@ func printCheck(w io.Writer, cfg *proxy.Config, stateDir string) error {
 			}
 		}
 	}
-	if len(cfg.Models) == 0 {
-		fmt.Fprint(w, i18n.T("  模型      已加载凭据暴露的全部模型\n", "  models         everything the loaded credentials expose\n"))
-	} else {
-		fmt.Fprintf(w, i18n.T("  模型      %v（精确匹配）\n", "  models         %v (exact match)\n"), cfg.Models)
-	}
+	// Validate refuses a non-empty models list -- nothing enforces it yet -- so
+	// by here every model the credentials expose is served.
+	fmt.Fprint(w, i18n.T("  模型      已加载凭据暴露的全部模型\n", "  models         everything the loaded credentials expose\n"))
 	return nil
 }
 

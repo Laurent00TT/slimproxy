@@ -4,6 +4,9 @@
 
 First public release.
 
+- Reject non-empty `models` lists during validation. Earlier builds displayed
+  an exact-match allowlist without enforcing it on requests; `models: []`
+  continues to serve all models exposed by loaded credentials.
 - Reverse proxy over CLIProxyAPI's SDK: one config file (21 keys),
   fail-closed inbound auth, management surface pinned off.
 - The engine is slimproxy's own fork of CLIProxyAPI v7.2.103, under

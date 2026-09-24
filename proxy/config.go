@@ -170,10 +170,26 @@ type Config struct {
 	// LogToFile writes application logs to disk instead of stdout.
 	LogToFile bool `yaml:"log-to-file"`
 
-	// Models optionally restricts which model names this proxy will serve.
+	// Models is reserved for a model allowlist that is not enforced yet, so
+	// Validate refuses a non-empty list. Empty serves everything the registry
+	// knows about for the loaded credentials.
 	//
-	// Empty means serve everything the registry knows about for the loaded
-	// credentials. See AllowModel.
+	// Refused rather than accepted because the list never reached the serving
+	// path: check printed it as an exact-match allowlist and the config summary
+	// as "N allow-listed" while every model was served. An access-control knob
+	// that reports itself on and does nothing is worse than no knob.
+	//
+	// TODO(you): enforcing it means deciding the matching policy. Exact match
+	// is safe but brittle: upstream names carry dated suffixes
+	// ("claude-sonnet-4-20250514") and requests arrive with a thinking suffix
+	// appended ("gpt-5.5(high)"), so an exact list needs editing every time a
+	// provider ships a build. Prefix match ("claude-") admits models added
+	// later, which may be more access than intended; stripping the "(...)"
+	// suffix before comparing lets one entry cover every reasoning level; glob
+	// or regex is the most expressive, but a bad pattern fails open silently.
+	// The check belongs where the engine resolves the model name for every
+	// dialect (Gemini's is in the URL path, not the body) -- in the fork, not
+	// in a middleware here re-parsing bodies.
 	Models []string `yaml:"models"`
 
 	// LogDir is where application logs go when LogToFile is on. Defaults to
@@ -325,7 +341,8 @@ func (c *Config) ConfigRows() []ConfigRow {
 	}
 	models := i18n.T("全部", "all")
 	if len(c.Models) > 0 {
-		models = fmt.Sprintf(i18n.T("%d 项白名单", "%d allow-listed"), len(c.Models))
+		// Diagnostics also render invalid configs; do not imply enforcement.
+		models = fmt.Sprintf(i18n.T("%d 项（尚不支持，拒绝启动）", "%d listed (unsupported; startup refused)"), len(c.Models))
 	}
 	retry := fmt.Sprint(c.RequestRetry)
 	if c.RequestRetry == 0 {
@@ -355,7 +372,7 @@ func (c *Config) ConfigRows() []ConfigRow {
 		{K: "stream-idle-timeout", V: stall, Warn: c.StreamIdleTimeout < 0},
 		{K: "stream-early-flush", V: c.StreamEarlyFlushSummary(), Warn: c.StreamEarlyFlush < 0},
 		{K: "claude-code-cache-ttl", V: c.ClaudeCodeCacheTTLSummary()},
-		{K: "models", V: models},
+		{K: "models", V: models, Warn: len(c.Models) > 0},
 		{K: "management api", V: i18n.T("已禁用", "disabled"), Warn: true},
 		{K: "plugin host", V: i18n.T("已禁用", "disabled"), Warn: true},
 	}
@@ -417,6 +434,14 @@ func (c *Config) Validate() error {
 		// here instead, naming the two lifetimes that exist.
 		errs = append(errs, fmt.Errorf(
 			"claude-code-cache-ttl %q unknown: Anthropic's prompt cache offers \"5m\" and \"1h\"; leave it empty to send breakpoints as Claude Code wrote them", c.ClaudeCodeCacheTTL))
+	}
+	if len(c.Models) > 0 {
+		// Nothing enforces the list (see Models). Accepting it would put an
+		// allowlist in the operator's config and in check's output while every
+		// model the credentials expose is served.
+		errs = append(errs, fmt.Errorf(
+			"models lists %d entries, but the model allowlist is not enforced yet: every model would still be served. "+
+				"Remove the entries (models: [] serves everything)", len(c.Models)))
 	}
 	if c.RequestRetry < 0 {
 		errs = append(errs, errors.New("RequestRetry must not be negative"))
@@ -597,35 +622,6 @@ func (c *Config) Addr() string {
 		host = "0.0.0.0"
 	}
 	return host + ":" + strconv.Itoa(c.Port)
-}
-
-// AllowModel reports whether this proxy should serve requests for model.
-//
-// TODO(you): decide the matching policy for Config.Models. The current
-// behaviour is exact-match, which is safe but brittle: upstream model names
-// carry dated suffixes ("claude-sonnet-4-20250514") and this proxy also
-// receives names with a thinking suffix appended ("gpt-5.5(high)"), so an
-// exact list needs editing every time a provider ships a build.
-//
-// Approaches worth weighing:
-//   - prefix match: "claude-" admits the whole family, including models added
-//     later, which may be more access than intended
-//   - strip the "(...)" thinking suffix before comparing, so one entry covers
-//     every reasoning level of a model
-//   - glob or regex: most expressive, but a bad pattern fails open silently
-//
-// This is a real access-control boundary, not a formatting choice, so it is
-// left to whoever knows what this deployment should expose.
-func (c *Config) AllowModel(model string) bool {
-	if len(c.Models) == 0 {
-		return true
-	}
-	for _, m := range c.Models {
-		if m == model {
-			return true
-		}
-	}
-	return false
 }
 
 // build converts Config into the CLIProxyAPI configuration, pinning every

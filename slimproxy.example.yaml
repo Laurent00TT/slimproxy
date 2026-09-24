@@ -129,6 +129,6 @@ request-log-dir: ""
 # hostnames, so it is bounded rather than kept forever. Zero means 7.
 journal-days: 7
 
-# Optional model allowlist. Empty serves everything the loaded credentials
-# expose. Matching is exact -- see proxy.Config.AllowModel before relying on it.
+# Reserved: a non-empty model list is rejected because it is not enforced yet.
+# Empty serves every model exposed by the loaded credentials.
 models: []
