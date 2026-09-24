@@ -7,9 +7,11 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 
 	"github.com/Laurent00TT/slimproxy/credentials"
 	"github.com/Laurent00TT/slimproxy/diag"
+	"github.com/Laurent00TT/slimproxy/i18n"
 	"github.com/Laurent00TT/slimproxy/metrics"
 	"github.com/Laurent00TT/slimproxy/tunnel"
 )
@@ -153,6 +155,35 @@ func TestEveryRowIsExactlyPanelWidth(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestPanelIgnoresTheHostsAmbiguousWidth pins the frame against the one host
+// setting its arithmetic used to read.
+//
+// runewidth's package default decides at init whether the host is East Asian
+// -- a Chinese Windows console outside Windows Terminal is -- and if so counts
+// box-drawing, ●, …, · and → as two cells. lipgloss never consults the host
+// and counts them as one. The check above only caught that on machines where
+// the default happened to flip, so this flips it by hand: the result must not
+// change.
+func TestPanelIgnoresTheHostsAmbiguousWidth(t *testing.T) {
+	saved := runewidth.DefaultCondition
+	runewidth.DefaultCondition = &runewidth.Condition{EastAsianWidth: true, StrictEmojiNeutral: true}
+	t.Cleanup(func() { runewidth.DefaultCondition = saved })
+	t.Cleanup(func() { i18n.Set(i18n.Zh) })
+
+	for _, lang := range []i18n.Lang{i18n.Zh, i18n.En} {
+		i18n.Set(lang)
+		for _, size := range [][2]int{{90, 26}, {56, 16}} {
+			w, h := size[0], size[1]
+			frame := sampleModel(w, h).renderPanel(w-2-hpad*2, h-1)
+			for i, line := range strings.Split(frame, "\n") {
+				if got := lipgloss.Width(line); got != w {
+					t.Errorf("语言 %d，%s：第 %d 行宽度 %d，应为 %d\n%q", lang, sizeName(w, h), i+1, got, w, line)
+				}
+			}
+		}
 	}
 }
 

@@ -336,12 +336,15 @@ func TestEdgeDNSFindingSurvivesTheTruncation(t *testing.T) {
 //
 // runewidth is what tui/theme.go measures with, so this counts the same cells
 // the terminal will. Counting runes instead would pass this test on the
-// Chinese strings and still lose half of them on screen.
+// Chinese strings and still lose half of them on screen. The condition is
+// pinned the way theme.go pins it: the package default counts ·, — and → as
+// two cells on a Chinese Windows console, and the panel does not.
 func cut(s string, cells int) string {
+	cond := &runewidth.Condition{EastAsianWidth: false, StrictEmojiNeutral: true}
 	var b strings.Builder
 	used := 0
 	for _, r := range s {
-		w := runewidth.RuneWidth(r)
+		w := cond.RuneWidth(r)
 		if used+w > cells {
 			break
 		}

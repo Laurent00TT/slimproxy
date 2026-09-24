@@ -103,13 +103,29 @@ func isControl(r rune) bool {
 	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
 }
 
+// cells is the width table every measurement in this package goes through.
+//
+// Pinned, not runewidth's DefaultCondition. That default is chosen at init
+// from the host: with RUNEWIDTH_EASTASIAN unset, a CJK locale -- on Windows a
+// console code page of 936 outside Windows Terminal -- turns on East Asian
+// width, and the Unicode "ambiguous" runes count as two cells. That class is
+// every box-drawing piece plus the ●, ▲, ·, …, → and — this panel draws.
+// lipgloss and bubbletea, which measure these rows and cut them at the
+// terminal edge, never look at the locale: they count those runes as one
+// cell unless RUNEWIDTH_EASTASIAN is set. So on a Chinese console every row
+// came out one cell short per ambiguous rune and the right border walked.
+//
+// One cell is also the only width the frame can be drawn at: the borders are
+// strings.Repeat(boxH, n) with n in cells.
+var cells = &runewidth.Condition{EastAsianWidth: false, StrictEmojiNeutral: true}
+
 // width is the display width of s in terminal cells.
 //
 // Not len(s) and not utf8.RuneCountInString: the labels are Chinese, and a CJK
 // rune occupies two cells. Getting this wrong does not misalign by a rune, it
 // misaligns by however many CJK characters precede the error -- and the right
 // border of every row drifts.
-func width(s string) int { return runewidth.StringWidth(s) }
+func width(s string) int { return cells.StringWidth(s) }
 
 // pad right-pads s with spaces to exactly w display cells.
 //
@@ -153,7 +169,7 @@ func truncate(s string, w int) string {
 	var b strings.Builder
 	used := 0
 	for _, r := range s {
-		rw := runewidth.RuneWidth(r)
+		rw := cells.RuneWidth(r)
 		if used+rw > limit {
 			break
 		}
