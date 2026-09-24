@@ -77,8 +77,8 @@ key 认证。OAuth 凭据留在本机。模型 ID 从代理目录选择，并以
 并发 WebSocket、压缩续接，以及本轮修复的验证和部署状态。
 
 把 [配置示例](../deploy/codex.config.example.toml) 中的字段合并到公司客户端的
-`~/.codex/config.toml`，将 `base_url` 换成实际隧道地址加 `/v1`。模型先使用本次
-实测的 `gpt-6-sol` 或 `gpt-6-astra`，其他模型需要分别验证权限；low 是本次测试值，可按任务调整。
+`~/.codex/config.toml`，将 `base_url` 换成实际隧道地址加 `/v1`。默认模型使用已
+实测的 `gpt-6-astra`；low 是本次测试值，可按任务调整。
 自定义 provider 使用的 `env_key`、`wire_api`、`supports_websockets` 等字段见
 [OpenAI 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。
 
