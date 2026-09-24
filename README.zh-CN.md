@@ -135,6 +135,7 @@ slimproxy 选择拒绝启动而不是继承这个行为。环境里有 `MANAGEME
 |---|---|
 | [docs/GUIDE.md](docs/GUIDE.md) | 使用指南。从零开始，每个命令什么时候用、输出怎么读、出问题怎么查。 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构剖析。每个设计决定在什么约束下做出，以及改哪里会出事。 |
+| [docs/CODEX.md](docs/CODEX.md) | Codex 代理改造与验收计划，区分已有回归测试和待完成的真实验证。 |
 | [docs/MIGRATION.md](docs/MIGRATION.md) | 搬机手册。换电脑或再开一台：clone、构建、重新授权，带什么、不带什么。 |
 | [deploy/TUNNEL.md](deploy/TUNNEL.md) | Cloudflare Tunnel 的一次性配置（把本机端口暴露到外网，英文）。 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 构建、测试，以及一个改动需要带上什么（英文）。 |

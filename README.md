@@ -404,6 +404,12 @@ contract:
 See [slimproxy.example.yaml](slimproxy.example.yaml) for the full key set with
 comments.
 
+## Codex deployment work
+
+[docs/CODEX.md](docs/CODEX.md) tracks the Codex compatibility baseline and the
+remaining account, tunnel, streaming, and session-recovery acceptance checks.
+Local regression tests are not a claim that a real Codex deployment has passed.
+
 ## Open decision
 
 `models` is reserved: a non-empty list is rejected at startup and by `check`.

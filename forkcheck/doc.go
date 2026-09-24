@@ -12,7 +12,7 @@
 // the fork, which is the failure mode guards exist to remove.
 //
 // The tests here shell out to `go test` inside the fork (scoped to the patch
-// regression tests -- the upstream's own suite has timing-flaky cases on
+// regressions and Codex compatibility baseline -- the full upstream suite has timing-flaky cases on
 // Windows), and pin the go.mod require version against the baseline named in
 // SLIMPROXY_PATCHES.md, which nothing else enforces.
 package forkcheck
