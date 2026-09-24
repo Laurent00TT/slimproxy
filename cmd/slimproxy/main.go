@@ -37,25 +37,33 @@ func main() {
 	// points nothing concurrent is running, so the second Set is safe.
 	i18n.Set(i18n.FromLocale(i18n.SystemLocale()))
 
-	cx := newContext()
-	err := dispatch(cx, os.Args[1:])
+	os.Exit(runCLI(newContext(), os.Args[1:], func() {
+		waitForConsoleError(standaloneConsole(), os.Stdin, os.Stderr)
+	}))
+}
+
+func runCLI(cx *cliContext, args []string, waitOnError func()) int {
+	err := dispatch(cx, args)
 	if err == nil {
-		return
+		return 0
 	}
 	// A command that already printed its findings sets the status without
 	// adding a second, redundant error line.
 	var silent *silentError
+	code := 1
 	if errors.As(err, &silent) {
-		os.Exit(silent.code)
+		code = silent.code
+	} else if errors.Is(err, errUsage) {
+		// A usage error already carries the command list.
+		fmt.Fprintln(cx.stderr, trimUsagePrefix(err.Error()))
+		code = 2
+	} else {
+		fmt.Fprintln(cx.stderr, "slimproxy:", err)
 	}
-	// A usage error already carries the command list; printing "slimproxy:"
-	// in front of a help screen just adds noise.
-	if errors.Is(err, errUsage) {
-		fmt.Fprintln(os.Stderr, trimUsagePrefix(err.Error()))
-		os.Exit(2)
+	if code != 0 && waitOnError != nil {
+		waitOnError()
 	}
-	fmt.Fprintln(os.Stderr, "slimproxy:", err)
-	os.Exit(1)
+	return code
 }
 
 func trimUsagePrefix(s string) string {

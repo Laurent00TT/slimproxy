@@ -248,6 +248,11 @@ which hostnames stop answering. Then it asks y/n.
 
 ### Other things to know
 
+- **Double-clicking on Windows starts a new proxy with its own panel.** If a
+  background instance already owns the port, stop that instance first. A startup
+  failure in a dedicated console leaves its error visible until Enter is pressed;
+  existing shells and redirected invocations do not pause. Closing the panel
+  stops that proxy instance.
 - **In-flight requests are rows, not just a count.** A completed request's
   telemetry comes from the SDK's usage record, which does not exist until the
   upstream answers — so a middleware tracks arrivals separately, and a running

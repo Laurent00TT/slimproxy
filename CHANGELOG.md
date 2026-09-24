@@ -4,6 +4,9 @@
 
 First public release.
 
+- Windows startup errors stay visible in a dedicated interactive console until
+  Enter is pressed, so double-clicking while the port is busy no longer looks
+  like a crash. Existing shells and redirected invocations still exit normally.
 - Count Cloudflare edge connections from the aggregated EDGE column instead
   of counting connector processes. Unknown column formats remain unknown.
 - Journal canceled Codex SSE requests and successful completions without
