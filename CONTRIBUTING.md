@@ -35,7 +35,19 @@ on. Translation contributions in either direction are welcome.
 
 ## Scope
 
-The emulation layer belongs to upstream CLIProxyAPI — slimproxy deliberately
-uses it as shipped. Fixes to translation behaviour should go upstream;
-slimproxy-side workarounds need a comment explaining why upstream is not the
-right place.
+The emulation layer is slimproxy's fork of CLIProxyAPI, under
+`third_party/CLIProxyAPI`. A fix or enhancement that belongs there is made
+there — not worked around from outside — and carries what keeps the next
+upstream upgrade tractable:
+
+- **An entry in `SLIMPROXY_PATCHES.md`**: what changed, why, with the
+  measurement that motivated it, and when it can be dropped.
+- **New code in a new `slimproxy_*.go` file** wherever it can be; edits to
+  upstream files kept to the call site, each marked with a `slimproxy patch`
+  comment so `grep` finds them all.
+- **Guard tests wired into the root `go test ./...` through `forkcheck/`.**
+  The fork is a nested module that the root's package pattern never enters;
+  a guard `forkcheck` does not run is a guard nobody runs.
+
+A change upstream would plausibly accept is still worth proposing there — every
+patch it takes is one fewer to carry — but it is not a prerequisite.

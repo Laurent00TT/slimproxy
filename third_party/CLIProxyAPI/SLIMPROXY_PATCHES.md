@@ -1,11 +1,19 @@
 # 本目录是什么
 
-`github.com/router-for-me/CLIProxyAPI/v7` **v7.2.103** 的本地副本，经 slimproxy
-根目录 `go.mod` 的 `replace` 指令生效。存在的唯一理由是下面的补丁清单；
-除补丁外的一切改动都不属于这里。
+slimproxy 的引擎：`github.com/router-for-me/CLIProxyAPI/v7` **v7.2.103** 的
+fork，经 slimproxy 根目录 `go.mod` 的 `replace` 指令生效。它归 slimproxy 所有——
+修复和增强该落在仿真层的，就在这里做，不必先等上游。
+
+代价是每次升级上游都要重打全部补丁，所以这里的每一处改动都遵守同一套约定：
+
+- 登记在下面的清单里：改了什么、为什么（带促成它的实测）、什么条件下可撤
+- 新代码尽量放进新的 `slimproxy_*.go` 文件；上游原文件只改调用点，每处带
+  `slimproxy patch` 注释，grep 即可全部找到
+- 守卫测试经根模块的 `forkcheck` 包接进 `go test ./...`——本目录是嵌套
+  module，根目录的包通配符进不来，forkcheck 不跑的守卫等于没人跑
 
 拷贝时排除了 assets/docs/examples/README*/Dockerfile 等非构建文件；
-`go.mod`、`go.sum`、`LICENSE` 与全部 Go 源码保持上游原样。
+`go.mod`、`go.sum`、`LICENSE` 与未打补丁的 Go 源码保持上游原样。
 
 # 补丁清单（grep `slimproxy patch` 可全部找到）
 

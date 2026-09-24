@@ -11,8 +11,10 @@
 // misconfigure: no management API, no control panel, no plugin host, no pprof,
 // no usage queue.
 //
-// The emulation layer is used exactly as CLIProxyAPI ships it. Nothing here
-// modifies, extends or hardens it.
+// The emulation layer itself is slimproxy's fork under third_party/CLIProxyAPI.
+// A change that belongs inside it -- in an executor, the registry, a handler --
+// is made there and listed in its SLIMPROXY_PATCHES.md; this package reaches
+// the result through the Builder like any other embedder.
 package proxy
 
 import (

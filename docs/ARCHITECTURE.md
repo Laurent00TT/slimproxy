@@ -10,13 +10,14 @@
 slimproxy 是一个跑在本机的 AI API 反向代理。客户端用 OpenAI 的协议发请求，
 它翻译成 Claude 的协议转发到上游，用的是**订阅制 OAuth 凭据**而不是按量计费的 API key。
 
-它建立在 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的公开 SDK 之上。
+它建立在 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 之上——准确说是
+仓库里 `third_party/CLIProxyAPI` 的那份 fork，经 `go.mod` 的 `replace` 接入。
 
 **"slim" 指的是配置面和运行面，不是依赖树，也不是二进制体积。**
 
 | | 上游 CLIProxyAPI | slimproxy |
 |---|---|---|
-| 配置项 | ~200 | 12 |
+| 配置项 | ~200 | 21 |
 | 管理 API | 有 | 关 |
 | 控制面板 | 有 | 关 |
 | 插件宿主（dlopen） | 有 | 关 |
@@ -38,8 +39,13 @@ slimproxy 是一个跑在本机的 AI API 反向代理。客户端用 OpenAI 的
 后果：
 
 - 构建一个 `Service` 就会链入 gin、pion/webrtc、redis、lumberjack——无论这些子系统是否运行
-- 想真正裁掉依赖，只能 fork CLIProxyAPI，代价是在仿真层上背永久的合并负担
-- **仿真层完全按 CLIProxyAPI 出厂状态使用，本项目不修改、不扩展、不加固它**
+- slimproxy 自己的代码（本仓库根模块）仍然只能经 `Builder` 触达 executor；要改 executor
+  本身，就改 fork
+- **fork 归 slimproxy 所有，修复和增强该落在仿真层的就落在那里**（建连、缓存断点改写、
+  模型目录都是这样做的）。代价是每次升级上游都要重打补丁，所以每一处改动都必须登记在
+  `third_party/CLIProxyAPI/SLIMPROXY_PATCHES.md`、调用点标 `slimproxy patch`、能放进
+  `slimproxy_*` 新文件的就不改上游原文件，并由 `forkcheck/` 接进根模块 `go test ./...`
+- 依赖树目前没有裁：fork 让它成为可能，但每裁一个子系统，升级时就多一处冲突
 
 ```mermaid
 graph TB
@@ -83,10 +89,12 @@ graph TB
     style slimproxy fill:#1a2a1a,stroke:#5a8a5a
 ```
 
-**上游依赖是已发布版本**：`go.mod` 直接依赖 module proxy 上的
-`github.com/router-for-me/CLIProxyAPI/v7`（版本见 go.mod 与 `slimproxy version`
-输出）。任何关于 SDK 行为的判断都以该版本的源码为准——升级上游版本时，
-本文档里对上游内部行为的描述（executor、translator registry、watcher）需要重新核实。
+**引擎是仓库里的 fork**：`go.mod` require 已发布的
+`github.com/router-for-me/CLIProxyAPI/v7`，再 `replace` 到 `./third_party/CLIProxyAPI`
+（基线版本见 go.mod 与 `slimproxy version` 输出）。任何关于 SDK 行为的判断都以
+`third_party/` 里的源码为准——升级上游版本时，本文档里对上游内部行为的描述
+（executor、translator registry、watcher）需要重新核实，补丁按 `SLIMPROXY_PATCHES.md`
+的流程重打。
 
 ---
 
@@ -135,7 +143,7 @@ sequenceDiagram
 | 包 | 职责 | 可以独立使用吗 |
 |---|---|---|
 | `translate/` | 对 `sdk/translator` 的类型化 fail-loud 门面。**但它不在服务路径上**——见下 | 可以，14 个间接依赖 |
-| `proxy/` | 把 12 项配置映射成 CLIProxyAPI 配置，pin 死所有不用的子系统，装配 Service | 否 |
+| `proxy/` | 把 21 项配置映射成 CLIProxyAPI 配置，pin 死所有不用的子系统，装配 Service | 否 |
 | `metrics/` | 累积已完成请求的遥测，供同进程的面板读取 | 可以 |
 | `credentials/` | 凭据池的读取、分类、删除；登录委托给 `sdk/auth` | 可以 |
 | `tunnel/` | cloudflared 子进程的三态状态、启动、停止、PID 记录 | 可以 |
@@ -426,4 +434,6 @@ diag/              部署诊断
 metrics/           完成请求的遥测
 docs/              本文档、使用指南、CLI 迁移计划
 deploy/            隧道部署文档与 PowerShell 安装脚本
+third_party/CLIProxyAPI/  引擎 fork；改动清单与升级流程见其中的 SLIMPROXY_PATCHES.md
+forkcheck/         把 fork 的守卫测试接进根模块 go test ./...
 ```

@@ -4,8 +4,12 @@
 
 First public release.
 
-- Reverse proxy over CLIProxyAPI's SDK: one config file (19 keys),
+- Reverse proxy over CLIProxyAPI's SDK: one config file (21 keys),
   fail-closed inbound auth, management surface pinned off.
+- The engine is slimproxy's own fork of CLIProxyAPI v7.2.103, under
+  `third_party/CLIProxyAPI`. Fixes and enhancements that belong in the
+  emulation layer are made there; every change is listed in its
+  `SLIMPROXY_PATCHES.md` with the tests that guard it.
 - Streaming responses that go silent are severed after 90s and the caller gets
   an explicit timeout to retry against, instead of hanging until its own stall
   detector fires — measured at five to nine minutes per occurrence. On by

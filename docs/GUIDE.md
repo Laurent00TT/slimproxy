@@ -68,7 +68,8 @@ Linux/macOS 上去掉 `.exe`，下文的 `slimproxy.exe` 相应改成 `./slimpro
 
 第一次构建会下载依赖，可能要几分钟。
 
-依赖全部来自公开的 Go module proxy，克隆下来即可构建，无需其他准备。
+引擎（CLIProxyAPI 的 fork）就在仓库的 `third_party/CLIProxyAPI` 里，其余依赖来自公开的
+Go module proxy，克隆下来即可构建，无需其他准备。
 
 ---
 
@@ -590,7 +591,7 @@ slimproxy.exe init -force                   # 覆盖已有的
 
 ## 7. 配置文件
 
-`slimproxy.yaml` 一共 19 项，没有隐藏选项（下面列出常用的，另有 `log-dir`、
+`slimproxy.yaml` 一共 21 项，没有隐藏选项（下面列出常用的，另有 `log-dir`、
 `request-log-dir`、`journal-days` 三项在各自的小节里讲）。
 
 ```yaml

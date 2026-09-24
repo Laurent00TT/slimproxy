@@ -1,9 +1,10 @@
-// Command slimproxy runs a minimal reverse proxy in front of the provider
-// executors that CLIProxyAPI ships.
+// Command slimproxy runs a minimal reverse proxy in front of CLIProxyAPI's
+// provider executors.
 //
 // It exists to shrink the operable surface: one small config file, no
 // management API, no plugin host, no control panel. The upstream client
-// emulation is CLIProxyAPI's, used unmodified.
+// emulation is CLIProxyAPI's, built from slimproxy's fork under
+// third_party/CLIProxyAPI.
 package main
 
 import (

@@ -27,7 +27,8 @@
 ```
 
 协议模拟层来自 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)，
-原样使用、未做任何修改。slimproxy 添加的是它周围的一切：17 个配置项（而不是约 200 个）、
+作为 slimproxy 自己的 fork 放在 [third_party/CLIProxyAPI](third_party/CLIProxyAPI)，
+该在那里修、该在那里扩展的就在那里改。围绕它，slimproxy 添加了：21 个配置项（而不是约 200 个）、
 默认拒绝的入站认证、终端仪表盘、隧道生命周期管理，以及一套「没查清楚就绝不说健康」的诊断。
 
 ## 部署之前
@@ -44,7 +45,7 @@
 
 ## 五分钟跑起来
 
-需要 Go（版本见 [go.mod](go.mod)）。没有其他依赖——模块从公共代理拉取。
+需要 Go（版本见 [go.mod](go.mod)）。没有其他依赖——引擎就在仓库里，其余模块从公共代理拉取。
 
 ```bash
 go build -o slimproxy ./cmd/slimproxy
@@ -156,6 +157,8 @@ CLI 本身是双语的——见上面的 `lang`。长文档以中文为主，因
 | `translate/` | `sdk/translator` 之上带类型、大声失败的门面。可独立使用——14 个间接依赖。**不在服务路径上**：CLIProxyAPI 的执行器直接调 `sdktranslator`，那条路径的守卫在 `proxy/untranslated.go`。 |
 | `fsperm/` | 把敏感路径限制到当前用户。Windows 上权限位不等于访问控制。 |
 | `cmd/slimproxy` | CLI：`serve`、`check`、`init`、`status`、`doctor`、`auth`、`tunnel`、`routes`、`log`、`test`、`version`、`help`。 |
+| `third_party/CLIProxyAPI` | 引擎：slimproxy 自己的 CLIProxyAPI fork，经 `go.mod` 的 `replace` 接入。相对上游的每一处改动都列在 `SLIMPROXY_PATCHES.md`。 |
+| `forkcheck/` | 让根模块的 `go test ./...` 跑到 fork 的守卫测试——嵌套 module 靠包通配符是进不去的。 |
 
 ---
 
@@ -164,17 +167,20 @@ CLI 本身是双语的——见上面的 `lang`。长文档以中文为主，因
 
 ## 「slim」指什么，不指什么
 
-**指**：配置和运行时表面。一个 17 项的配置文件，而不是约 200 项。没有管理 API、
+**指**：配置和运行时表面。一个 21 项的配置文件，而不是约 200 项。没有管理 API、
 没有控制面板、没有插件宿主、没有 pprof、没有 Redis 用量队列。不认识的配置项是
 错误，不会被静默忽略。入站认证默认拒绝。
 
 **不指**：依赖树和二进制体积。承载上游客户端模拟的 provider 执行器住在
 CLIProxyAPI 的 `internal/` 树里。Go 的 internal 包规则让 `sdk/cliproxy.Builder`
 成为其他模块触达它们的唯一途径，而构建一个 `Service` 会把 gin、pion/webrtc、
-redis 和 lumberjack 全部链接进来，不管那些子系统跑不跑。真要缩小它得 fork
-CLIProxyAPI，用依赖树换模拟层上的永久合并负担。
+redis 和 lumberjack 全部链接进来，不管那些子系统跑不跑。有了 fork，裁掉它们成为
+可能；目前没做——每裁掉一个子系统，每次升级上游时就多一处要解决的冲突。
 
-**模拟层按 CLIProxyAPI 出厂的样子原样使用。** 本模块不修改、不扩展、不加固它。
+**引擎由 slimproxy 自己改。** 修复或增强该落在模拟层里的——建连、缓存断点改写、
+模型目录——就在 fork 里做，而不是从外面绕。每一处改动都列在
+[SLIMPROXY_PATCHES.md](third_party/CLIProxyAPI/SLIMPROXY_PATCHES.md)，调用点标着
+`slimproxy patch`，并由 `forkcheck/` 接进根模块 `go test ./...` 的测试守着。
 
 ## 面板
 
@@ -345,11 +351,13 @@ err = stream.ReadFrom(ctx, resp.Body, func(frame []byte) error {
 剥后缀、glob，每种都在便利和过度暴露之间做交换。这是真实的访问控制边界，
 所以策略在 `proxy/config.go` 里标着 `TODO(you)`，而不是替你猜一个。
 
-## 对着上游构建
+## 引擎 fork
 
-`go.mod` 依赖公共模块代理上已发布的 CLIProxyAPI 版本——clone 下来
-`go build ./cmd/slimproxy`，别的什么都不需要。`slimproxy version` 打印二进制
-构建时对着的确切上游版本；报 bug 时请带上它，因为翻译层的行为是上游的。
+`go.mod` require 一个已发布的 CLIProxyAPI 版本，再用 `replace` 换成
+`third_party/CLIProxyAPI`——clone 下来 `go build ./cmd/slimproxy`，别的什么都
+不需要。`slimproxy version` 打印 fork 所基于的上游版本；报 bug 时请带上它。
+跟进更新的上游版本，就是重建那个目录并重打补丁——流程见
+[SLIMPROXY_PATCHES.md](third_party/CLIProxyAPI/SLIMPROXY_PATCHES.md)。
 
 ## 许可
 

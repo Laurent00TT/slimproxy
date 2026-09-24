@@ -27,9 +27,10 @@ actually happening while it does.
  › /tunnel d
 ```
 
-The protocol emulation is [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)'s,
-used exactly as it ships. What slimproxy adds is everything around it: a
-17-key config instead of ~200, fail-closed auth, a terminal dashboard, tunnel
+The protocol emulation comes from [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI),
+carried as slimproxy's own fork in [third_party/CLIProxyAPI](third_party/CLIProxyAPI) and
+fixed or extended there when that is the right place. Around it slimproxy adds a
+21-key config instead of ~200, fail-closed auth, a terminal dashboard, tunnel
 lifecycle management, and diagnostics that refuse to call an unanswered
 question healthy.
 
@@ -52,8 +53,8 @@ question healthy.
 
 ## Quick start
 
-Requires Go (version in [go.mod](go.mod)). No other setup — dependencies come
-from the public module proxy.
+Requires Go (version in [go.mod](go.mod)). No other setup — the engine is in
+the tree and the remaining dependencies come from the public module proxy.
 
 ```bash
 go build -o slimproxy ./cmd/slimproxy
@@ -178,6 +179,8 @@ contributions translating either direction are welcome.
 | `translate/` | Typed, fail-loud facade over `sdk/translator`. Usable on its own — 14 indirect dependencies. **Not on the serving path**: CLIProxyAPI's executors call `sdktranslator` directly, so the guard for that path lives in `proxy/untranslated.go`. |
 | `fsperm/` | Restricts sensitive paths to the current user. On Windows the permission bits are not access control. |
 | `cmd/slimproxy` | CLI: `serve`, `check`, `init`, `status`, `doctor`, `auth`, `tunnel`, `routes`, `log`, `test`, `version`, `help`. |
+| `third_party/CLIProxyAPI` | The engine: slimproxy's fork of CLIProxyAPI, wired in by `go.mod`'s `replace`. Every change from upstream is listed in `SLIMPROXY_PATCHES.md`. |
+| `forkcheck/` | Runs the fork's guard tests from the root module's `go test ./...`, which cannot reach a nested module on its own. |
 
 ---
 
@@ -187,7 +190,7 @@ worth knowing before something surprises you.
 
 ## What "slim" does and does not mean
 
-**Does**: the configuration and runtime surface. One config file with 17 keys instead of
+**Does**: the configuration and runtime surface. One config file with 21 keys instead of
 ~200. No management API, no control panel, no plugin host, no pprof, no Redis usage queue.
 Unknown config keys are errors, not silently ignored. Inbound auth is fail-*closed*.
 
@@ -195,11 +198,15 @@ Unknown config keys are errors, not silently ignored. Inbound auth is fail-*clos
 the upstream client emulation — live in CLIProxyAPI's `internal/` tree. Go's
 internal-package rule makes `sdk/cliproxy.Builder` the only way for another module to reach
 them, and building a `Service` links gin, pion/webrtc, redis and lumberjack whether or not
-those subsystems run. Genuinely shrinking that requires forking CLIProxyAPI, which trades
-the dependency tree for permanent merge burden on the emulation layer.
+those subsystems run. The fork makes cutting them possible; it has not been done, and every
+subsystem removed is one more conflict to resolve at each upstream upgrade.
 
-**The emulation layer is used exactly as CLIProxyAPI ships it.** Nothing in this module
-modifies, extends, or hardens it.
+**The engine is slimproxy's to change.** When a fix or an enhancement belongs in the
+emulation layer — connection setup, cache-control rewriting, the model catalog — it is made
+in the fork rather than worked around from outside. Each change is listed in
+[SLIMPROXY_PATCHES.md](third_party/CLIProxyAPI/SLIMPROXY_PATCHES.md), marked
+`slimproxy patch` at its call sites, and guarded by tests that `forkcheck/` wires into the
+root `go test ./...`.
 
 ## Dashboard
 
@@ -405,13 +412,14 @@ suffix appended (`gpt-5.5(high)`). Prefix matching, suffix-stripping, and globs 
 convenience against over-exposure. It is a real access-control boundary, so the policy is
 left marked `TODO(you)` in `proxy/config.go` rather than guessed.
 
-## Building against upstream
+## The engine fork
 
-`go.mod` depends on a published CLIProxyAPI release from the public module
-proxy — clone and `go build ./cmd/slimproxy`, nothing else required.
-`slimproxy version` prints the exact upstream version a binary was built
-against; include it in bug reports, since the translation layer's behaviour is
-the upstream's.
+`go.mod` requires a published CLIProxyAPI release and `replace`s it with
+`third_party/CLIProxyAPI` — clone and `go build ./cmd/slimproxy`, nothing else
+required. `slimproxy version` prints the upstream release the fork is based on;
+include it in bug reports. Taking a newer upstream release is a rebuild of that
+directory with the patches re-applied — the procedure is in
+[SLIMPROXY_PATCHES.md](third_party/CLIProxyAPI/SLIMPROXY_PATCHES.md).
 
 ## License
 
