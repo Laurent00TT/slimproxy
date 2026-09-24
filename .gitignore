@@ -51,8 +51,9 @@ run.log
 # explicit if logs/ is ever narrowed.
 logs/events/
 
-# Backups left by refactors, and the debris of interrupted builds.
+# Backups left by refactors, and the debris of interrupted builds. *.bak* and
+# not *.bak: the binary swaps leave slimproxy.exe.bak2 and the like, and each
+# is a 69MB file one "git add ." away from the history.
 _backup_*/
-*.bak
-*.bak-*
+*.bak*
 *~
