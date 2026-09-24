@@ -329,6 +329,25 @@ Connection: close。2026-09-23 有 20 个请求这样死掉（desperation 预发
     经 Build 装配的真实链路断言同一性质（链上任何一个 writer 不再 Unwrap，
     预发头就被 drain 挡住、测试即红）。
 
+2026-09-24 的 Codex OAuth 实测：`gpt-6-sol` 普通 Responses 与工具循环成功，
+`/responses/compact` 上游却返回 404 `{"detail":"Not Found"}`。原错误进入
+AuthManager 的模型冷却逻辑，将同一凭据上的模型停用 12 小时，下一次正常
+Responses 立即变成 503。`gpt-5.5` 的独立 compact 接口也返回 404；经
+`/responses` 发送 `compaction_trigger` 则成功，压缩后仍能还原测试标记。
+
+19. `internal/runtime/executor/slimproxy_codex_compact.go`（新增文件）
+    将独立 compact 的 404 标为 request-scoped，保留原状态码、错误体和错误链
+    的接口行为。`codex_executor_execute.go` 只在 `executeCompact` 的失败
+    分支换一个调用点，带 `slimproxy patch` 注释。普通推理的 404，以及 compact
+    的 401/403/429 仍走原有冷却逻辑。这个补丁不伪造压缩成功，也不重放请求。
+
+20. `internal/runtime/executor/slimproxy_codex_compact_test.go`（新增文件）
+    经真实 AuthManager 和本地模拟上游，先返回 compact 404，再验证同一凭据、
+    同一模型的流式 Responses 可执行；另四个子场景验证普通推理 404 及 compact
+    401/403/429 仍阻止下一次推理。根模块 `TestForkCodexCompatibilityBaseline`
+    接入此测试。已变异验证：调用点恢复为 `newCodexStatusErr` 后，第一个场景
+    因 `auth_unavailable: no auth available` 失败，其余四个场景通过。
+
 # 升级上游版本的流程
 
 1. `go mod download github.com/router-for-me/CLIProxyAPI/v7@<新版本>`
@@ -340,14 +359,16 @@ Connection: close。2026-09-23 有 20 个请求这样死掉（desperation 预发
    `internal/runtime/executor/slimproxy_cache_ttl{,_test}.go`、
    `internal/registry/slimproxy_claude_extras{,_test}.go`、
    `internal/runtime/executor/helps/slimproxy_utls_setup{,_test}.go`、
-   `internal/logging/slimproxy_cpa_trace_unwrap{,_test}.go`
+   `internal/logging/slimproxy_cpa_trace_unwrap{,_test}.go`、
+   `internal/runtime/executor/slimproxy_codex_compact{,_test}.go`
 3. 按上面的清单重打全部补丁（grep 上游新代码确认发布点、
    `GetContextWithCancel` 与两个拉取器的 `client :=` 行没变形、
    两处 `normalizeCacheControlTTL(body)` 调用仍在且第 11 条的调用点
    排在它前面、`GetClaudeModels` 与 `LookupStaticModelInfo` 仍从
    `getModels()` 读 claude 段、`utls_client.go` 删掉上游的
    `getOrCreateConnection` / `createConnection` 并按第 15 条改 `pending`
-   类型、加 `rootCAs`、`RoundTrip` 传 `req.Context()`；grep `slimproxy patch`
+   类型、加 `rootCAs`、`RoundTrip` 传 `req.Context()`；`executeCompact` 的错误
+   分支使用第 19 条的 request-scoped 包装；grep `slimproxy patch`
    核对齐全）
 4. 仓库根目录 `go build ./... && go test ./...`。**不要**写
    `go test ./third_party/...`：本目录是嵌套 module，根目录的包通配符
@@ -358,7 +379,7 @@ Connection: close。2026-09-23 有 20 个请求这样死掉（desperation 预发
    会因时钟粒度偶发翻红）、第 6 条的三个 ctx 重挂守卫、第 8/9 条的六个
    目录客户端守卫、第 12 条的九个缓存 TTL 守卫、第 14 条的四个固定 Claude
    模型守卫、第 16 条的十一个 utls 建连守卫、第 18 条的 CPA trace writer
-   Unwrap 守卫，并核对第 5 步的版本同步。每条守卫都用 `-v` 跑并逐个
+   Unwrap 守卫、包含第 20 条的 17 项 Codex 兼容性守卫，并核对第 5 步的版本同步。每条守卫都用 `-v` 跑并逐个
    核对 `--- PASS:` 行：只看退出码会在测试文件被升级冲掉时假绿——
    `go test -run` 对空匹配打印 `[no tests to run]` 然后 exit 0。
    要手工全量跑上游套件时：`cd third_party/CLIProxyAPI && go test ./...`。
@@ -379,5 +400,6 @@ Connection: close。2026-09-23 有 20 个请求这样死掉（desperation 预发
 探活与空闲关闭（可提 PR，理由与实测数据见第 15 条前的说明），第 15-16 条
 可撤。上游若给自己的 response writer 包装加上 Unwrap（可提 PR：
 ResponseController 文档本就要求包装者提供它），第 17-18 条可撤——编译报
-方法重复时就是信号。全部补丁都撤掉后，删除
+方法重复时就是信号。上游若能区分 compact 端点 404 与模型不可用，且第 20 条
+测试不再依赖本地调用点仍通过，第 19-20 条可撤。全部补丁都撤掉后，删除
 本目录并移除 go.mod 的 replace 行。

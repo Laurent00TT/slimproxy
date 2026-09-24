@@ -4,6 +4,12 @@
 
 First public release.
 
+- A Codex standalone compaction 404 no longer puts an otherwise usable model
+  into a twelve-hour cooldown. The request still fails visibly; inference 404s
+  and credential/quota failures retain their existing cooldown behavior.
+- Record real Codex OAuth, Responses/SSE, function-call roundtrip, streaming
+  compaction and WebSocket context checks, with a company-client configuration
+  template and explicit remaining acceptance work in `docs/CODEX.md`.
 - Reject non-empty `models` lists during validation. Earlier builds displayed
   an exact-match allowlist without enforcing it on requests; `models: []`
   continues to serve all models exposed by loaded credentials.

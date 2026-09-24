@@ -16,6 +16,7 @@ func TestForkCodexCompatibilityBaseline(t *testing.T) {
 			"TestNormalizeCodexParallelToolCallsForTools_PreservesWhenToolsPresent",
 			"TestCodexExecutorExecuteStreamResponsesLiteHeaderForcesParallelToolCallsFalse",
 			"TestCodexExecutorCompactAddsDefaultInstructionsWithoutInjectingImageTool",
+			"TestSlimproxyCodexCompactFailureCooldown",
 			"TestCodexExecutorExecuteStreamMissingCompletionIsRequestScoped",
 			"TestCodexExecutorExecuteStreamExplicitTerminalFailureIsNotSuccessful",
 			"TestCodexExecutorExecuteStreamIgnoresTransportErrorAfterCompletion",

@@ -1,0 +1,15 @@
+# Merge these values into the company client's ~/.codex/config.toml.
+# Replace the example origin and supply a slimproxy inbound key in the
+# SLIMPROXY_API_KEY environment variable visible to that client process.
+model = "gpt-6-sol"
+model_provider = "slimproxy"
+model_reasoning_effort = "low"
+
+[model_providers.slimproxy]
+name = "Home slimproxy"
+base_url = "https://proxy.example.com/v1"
+env_key = "SLIMPROXY_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
+# Enable websockets on the home server's Codex credential too; see docs/CODEX.md.
+supports_websockets = true

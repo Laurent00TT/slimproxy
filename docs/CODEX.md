@@ -9,9 +9,10 @@
   日志与终端显示改进。非空 `models` 配置被拒绝，避免误报尚未实现的白名单。
 - 引擎已有 Codex OAuth 登录与刷新、HTTP/SSE Responses、WebSocket 和 compact。
 - 根模块 `go test ./...` 现在通过 `TestForkCodexCompatibilityBaseline` 执行
-  16 项现有 Codex 回归测试，覆盖输入、工具参数、流结束、压缩和 WebSocket 状态。
+  17 项 Codex 回归测试，覆盖输入、工具参数、流结束、压缩和 WebSocket 状态。
   测试使用本地模拟上游，不消耗账号配额，也不能证明真实账号或公网链路可用。
-- 真实 OAuth 登录、模型调用与公司端验收尚待完成；不能据此宣称生产可用。
+- 真实 OAuth 登录与下表中的本地、公网协议验证已完成。公司端客户端、长任务和
+  故障恢复仍待验收；不能据此宣称全部生产场景通过。
 
 ## 阶段一：真实使用基线
 
@@ -24,18 +25,70 @@ key 认证。OAuth 凭据留在本机。模型 ID 从代理目录选择，并以
 
 | 场景 | 通过条件 | 当前状态 |
 |---|---|---|
-| 非流式回复 | 正确结果及明确的完成状态 | 待实测 |
-| 流式回复 | 增量事件有序，结束事件完整，usage 可记录 | 待实测 |
-| 连续多轮 | 前文及工具结果得到保留 | 待实测 |
-| 工具调用 | call_id、名称、参数与回传结果关联正确 | 待实测 |
-| 并发会话 | 上下文、输出和缓存标识不串线 | 待实测 |
+| 非流式回复 | 正确结果及明确的完成状态 | 本地通过 |
+| 流式回复 | 增量事件有序，结束事件完整，usage 可记录 | 本地、公网通过 |
+| 连续多轮 | 前文及工具结果得到保留 | 本地、公网两轮通过；包括 WebSocket 的 previous_response_id |
+| 工具调用 | call_id、名称、参数与回传结果关联正确 | 本地、公网 SSE 两轮通过 |
+| 并发会话 | 上下文、输出和缓存标识不串线 | 公网两个 WebSocket 会话的不同标记未串线；缓存归属待验 |
 | 长推理 | 健康的静默期不会误触发超时 | 待实测 |
-| compact | 压缩后可继续完成任务 | 待实测 |
-| 取消与继续 | 上游及时取消，后续轮次正常 | 待实测 |
-| 图片输入 | 图像和文字均到达上游 | 待实测 |
+| compact | 压缩后可继续完成任务 | 本地、公网 compaction_trigger 通过；独立 compact 接口上游 404 |
+| 取消与继续 | 上游及时取消，后续轮次正常 | 公网客户端中止后新请求通过；上游停止时延及取消计量待验 |
+| 图片输入 | 图像和文字均到达上游 | 公网合成双色 PNG 与文字问题通过 |
 
 `slimproxy test` 当前只发送一个非流式 Chat Completions 请求。它成功不代表上表
 的 Responses、工具循环、compact 或 WebSocket 已通过。
+
+### 2026-09-24 实测记录
+
+代理在 Windows 本机监听 loopback，经本机出站 HTTP 代理访问 ChatGPT；公网
+请求从同一台电脑经现有 Cloudflare Tunnel 域名回到代理。**这不是公司网络验收**。
+使用独立 Go HTTP/WebSocket 探针，模型 `gpt-6-sol`、推理强度 `low`、
+`store:false`，保留 `reasoning.encrypted_content`。本机安装的 Codex CLI 版本为
+`0.155.0-alpha.9.2`；这一轮没有用 CLI 执行实际编程任务。
+
+- 非流式返回 `BASELINE_OK`，状态 completed，用时约 10.0s；首次 TLS 握手 EOF
+  后，现有的连接建立保护重试成功。
+- 本地 SSE 首事件约 2.47s、总计 3.37s，得到完整 completed 事件和 usage。
+- 工具两轮校验函数名、JSON 参数和 call_id；回传合成结果 `TOOL_LOOP_OK` 后
+  得到正确最终文本。公网两轮总计分别约 4.44s、4.13s。
+- WebSocket 在凭据启用 `websockets:true` 后，本地与公网都升级为 101；第二轮
+  仅带新增问题及 previous_response_id，正确取回第一轮的标记。公网首轮约
+  3.90s，第二轮约 2.47s。响应含上游 `responsesapi.websocket_timing` 事件。
+- 公网同时打开两个 WebSocket 会话，各自记住不同标记，第二轮分别用自身的
+  previous_response_id 取回原值，没有互串。此检查未验证缓存命中归属。
+- 公网发送内存生成的红蓝双色 PNG，模型正确按左右顺序返回 `RED,BLUE`。
+- 公网流式长输出在第一个文本增量后取消并关闭连接，随后新请求返回
+  `BASELINE_OK`，约 3.56s 完成。只能据此确认后续调用未被阻塞，不能据此证明
+  上游停止时延、取消后的计量或 WebSocket 中途断线恢复已经通过。
+- 独立 `/responses/compact` 对 `gpt-6-sol`、`gpt-5.5` 均返回上游 404。
+  这曾触发模型 12 小时冷却，让后续普通请求变成 503；现已修复并加入回归守卫。
+- 通过 `/responses` 的输入追加 `{"type":"compaction_trigger"}`，收到 compaction
+  输出项，再将输出作为新上下文发起下一轮，正确找回 `COMPACT_KEEP_4821`。
+  本地与公网都通过，公网压缩与续接分别约 10.48s、9.38s。
+
+以上是少量短请求的观测值，不是延迟分位数或稳定性承诺。独立 compact 404 的
+修复只隔离失败影响，没有把它改成另一个端点，也没有将失败伪装成成功。
+`compaction_trigger` 的协议形式也见 [OpenAI reasoning 文档](https://developers.openai.com/api/docs/guides/reasoning)。
+
+### 公司端接入配置
+
+把 [配置示例](../deploy/codex.config.example.toml) 中的字段合并到公司客户端的
+`~/.codex/config.toml`，将 `base_url` 换成实际隧道地址加 `/v1`。模型先使用本次
+实测的 `gpt-6-sol`，其他模型需要分别验证权限；low 是本次测试值，可按任务调整。
+自定义 provider 使用的 `env_key`、`wire_api`、`supports_websockets` 等字段见
+[OpenAI 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。
+
+公司端的 `SLIMPROXY_API_KEY` 环境变量填写家里 `slimproxy.yaml` 中的一个入站
+`api-keys` 值。不要将家里的 OAuth 文件或刷新令牌复制过去。启动客户端的进程
+必须能读取这个环境变量；修改环境变量后，已运行的桌面应用需要重新启动。
+
+家里的 Codex 凭据 JSON 顶层需启用 `"websockets": true`，引擎才会使用上游
+WebSocket；本次实测账号已启用。只开启公司端的 supports_websockets 并不保证
+上游也使用 WebSocket。若暂时以 SSE 排查，将客户端这个选项设为 false。
+
+先在公司端做短回复、工具调用、两轮上下文及压缩验收，再开始长任务。若客户端
+仍调用独立 `/responses/compact` 并收到 404，应记录版本与请求方式，核对其是否
+支持新版流式压缩；不要靠删除历史或无限重试掩盖错误。
 
 ## 阶段二：流式稳定性
 
